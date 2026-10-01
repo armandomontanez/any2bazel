@@ -71,9 +71,11 @@ class Kind(str, Enum):
     FLAGS_DIFF = "flags_diff"
     LINK_FLAGS_DIFF = "link_flags_diff"   # executable/shared-lib link flags
     MISSING_DEP = "missing_dep"
-    # Java (CompileGroup) source-set comparison:
     MISSING_JAVA_SRC = "missing_java_src"  # .java compiled in A but not B
     EXTRA_JAVA_SRC = "extra_java_src"      # .java compiled in B but not A
+    # C# source-set comparison:
+    MISSING_CS_SRC = "missing_cs_src"
+    EXTRA_CS_SRC = "extra_cs_src"
     # test-specific (only emitted when cfg.include_tests):
     MISSING_TEST_TU = "missing_test_tu"     # test source compiled in cmake, not bazel
     EXTRA_TEST_TU = "extra_test_tu"         # test source compiled in bazel, not cmake
@@ -269,6 +271,18 @@ def _union_java_sources(views: Dict[str, TargetView], names) -> Dict[str, str]:
     return out
 
 
+def _union_csharp_sources(views: Dict[str, TargetView], names) -> Dict[str, str]:
+    """Pool every C# source across all compile groups of the given targets into
+    one map."""
+    out: Dict[str, str] = {}
+    for n in names:
+        for g in views[n].compile_groups:
+            for src in g.sources:
+                if src.endswith(".cs"):
+                    out.setdefault(src, src)
+    return out
+
+
 def _all_source_keys(views: Dict[str, TargetView], cfg: "MigrationConfig") -> set:
     """Every source key compiled ANYWHERE in the participating scope, ignoring
     role. Used as the presence reference so a source that's a library TU on one
@@ -383,6 +397,18 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
         out.append(Discrepancy(Kind.EXTRA_JAVA_SRC.value, Severity.WARN.value,
                                "<java>", "java source compiled in B but not A",
                                tu=b_java[key]))
+
+    # ---- C#: project-wide source-SET comparison ----------------------------
+    a_cs = _union_csharp_sources(a_views, a_names)
+    b_cs = _union_csharp_sources(b_views, b_names)
+    for key in sorted(set(a_cs) - set(b_cs)):
+        out.append(Discrepancy(Kind.MISSING_CS_SRC.value, Severity.ERROR.value,
+                               "<csharp>", "C# source compiled in A but not B",
+                               tu=a_cs[key]))
+    for key in sorted(set(b_cs) - set(a_cs)):
+        out.append(Discrepancy(Kind.EXTRA_CS_SRC.value, Severity.WARN.value,
+                               "<csharp>", "C# source compiled in B but not A",
+                               tu=b_cs[key]))
 
     # ---- link closure: EXTERNAL deps only ----------------------------------
     # Internal (in-project) dep names are meaningless once libraries are

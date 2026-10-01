@@ -13,3 +13,15 @@ model.*.json
 aquery.json
 diff.json
 actions.ndjson
+
+# Visual Studio / MSVC build directories
+.vs/
+Debug/
+Release/
+x64/
+x86/
+bin/
+obj/
+bld/
+out/
+build/

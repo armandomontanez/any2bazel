@@ -43,11 +43,13 @@ from model import (Action, BuildSystem, CanonicalModel, Dependency, Target,
 _COMPILE_MNEMONICS = {"CppCompile", "ObjcCompile"}
 _LINK_MNEMONICS = {"CppLink", "CppArchive"}
 _JAVA_COMPILE_MNEMONICS = {"JavaCompile"}
+_CSHARP_COMPILE_MNEMONICS = {"CSharpCompile"}
 
 _HEADER_EXTS = (".h", ".hpp", ".hh", ".hxx", ".inc", ".inl")
 _SOURCE_EXTS = (".cc", ".cpp", ".cxx", ".c", ".C", ".m", ".mm")
 _ARCHIVE_EXTS = (".a", ".lo", ".lib")
 _JAVA_EXT = ".java"
+_CSHARP_EXT = ".cs"
 
 
 @dataclass
@@ -97,12 +99,13 @@ def _source_from_compile_args(args) -> Optional[str]:
     None for header inputs -- not translation units."""
     src = None
     for i, a in enumerate(args):
-        if a == "-c" and i + 1 < len(args):
+        # GCC/Clang -c output
+        if a == "-c" and i + 1 < len(args) and not args[i+1].startswith("/") and not args[i+1].startswith("-"):
             src = args[i + 1]
             break
     if src is None:
         for a in args:
-            if a.endswith(_SOURCE_EXTS):
+            if a.endswith(_SOURCE_EXTS) and not a.startswith("/") and not a.startswith("-"):
                 src = a
                 break
     if src is None or src.endswith(_HEADER_EXTS):
@@ -146,6 +149,23 @@ def _java_compile_group(args, repo_root: str) -> "CompileGroup":
             sources.append(_rel(a, repo_root)); i += 1; continue
         flags.append(a); i += 1
     return CompileGroup(key=out_key or "<javac>",
+                        sources=tuple(sorted(sources)), flags=tuple(flags))
+
+
+def _csharp_compile_group(args, repo_root: str) -> "CompileGroup":
+    """Split a CSharpCompile argv into (sources, flags) and key the group by its
+    output dir/file (`-out:` or `/out:`). Sources are the .cs args, made repo-relative + sorted;
+    flags are everything else kept RAW for now."""
+    sources, flags = [], []
+    out_key = ""
+    for a in args:
+        if a.startswith("-out:") or a.startswith("/out:"):
+            out_key = _rel(a.split(":", 1)[1], repo_root)
+            flags.append(a); continue
+        if a.endswith(_CSHARP_EXT):
+            sources.append(_rel(a, repo_root)); continue
+        flags.append(a)
+    return CompileGroup(key=out_key or "<csc>",
                         sources=tuple(sorted(sources)), flags=tuple(flags))
 
 
@@ -252,6 +272,10 @@ def reconstruct_target(t: Target, build_system: BuildSystem,
             # Java compiles a whole source set per action -> one CompileGroup.
             view.compile_groups.append(
                 _java_compile_group(act.arguments, repo_root))
+        elif act.mnemonic in _CSHARP_COMPILE_MNEMONICS:
+            # C# compiles a whole source set per action -> one CompileGroup.
+            view.compile_groups.append(
+                _csharp_compile_group(act.arguments, repo_root))
 
     # deps: trust the frontend's resolved annotation (CMake); else infer from
     # link argv (Bazel).

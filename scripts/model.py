@@ -47,6 +47,7 @@ class BuildSystem(str, Enum):
     BAZEL = "bazel"
     MAVEN = "maven"
     NPM = "npm"
+    MSBUILD = "msbuild"
     UNKNOWN = "unknown"
 
 
@@ -94,7 +95,7 @@ class Action:
     are resolved annotations a frontend fills when it can.
 
       mnemonic   action kind: CppCompile / CppLink / CppArchive / JavaCompile /
-                 ... The differ groups and interprets per mnemonic.
+                 CSharpCompile / ... The differ groups and interprets per mnemonic.
       arguments  RAW ARGV (the faithful floor). Bazel: the literal command line.
                  CMake/Maven: synthesized from structured config (no real argv).
       inputs     declared input paths (annotation; e.g. a CMake compile group's

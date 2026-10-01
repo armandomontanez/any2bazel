@@ -59,9 +59,10 @@ Ranges, not recommendations. "Declared" is what a `MODULE.bazel` asked for;
 
 | ruleset | declared range | resolved | migrations | how far it was exercised |
 |---|---|---|---|---|
-| `rules_cc` | 0.0.16 – 0.2.22 | 0.2.14 – 0.2.22 | Dolphin; fmt, spdlog, TinyXML2, zlib; BoringSSL, Abseil, RE2 | Dolphin: `//...` green in 3 configurations, 1350 tests pass, action-graph parity 0 errors. Build re-verified green at declared 0.0.16 / 0.1.1 / 0.2.22; `compatibility_level = 1` and both `//cc:defs.bzl` and the per-rule `.bzl` files exist across that whole span |
+| `rules_cc` | 0.0.16 – 0.2.22 | 0.2.14 – 0.2.22 | Dolphin; fmt, spdlog, TinyXML2, zlib; BoringSSL, Abseil, RE2; PowerToys | Dolphin: `//...` green in 3 configurations, 1350 tests pass, action-graph parity 0 errors. PowerToys: `--config=windows` native MSVC or `hermetic-llvm` cross-compilation. Build re-verified green at declared 0.0.16 / 0.1.1 / 0.2.22; `compatibility_level = 1` and both `//cc:defs.bzl` and the per-rule `.bzl` files exist across that whole span |
 | `platforms` | 0.0.10 – 1.1.0 | 1.0.0 – 1.1.0 | same | as above; only ever a transitive/constraint dep |
 | `rules_jvm_external` | 6.7 | — | Guava (Maven frontend) | one point, coordinate deps only; the Maven frontend is argv-floor, so this is not a parity claim |
+| `rules_dotnet` | — | — | PowerToys | C# source compilation parity (via MSBuild extraction, planned) |
 | `rules_license`, `googletest`, `google_benchmark`, `rules_python` | see note | — | BoringSSL, Abseil, RE2 | **not our choices** — these are what those projects' *own* Bazel builds declare (`rules_license` 1.0.0, `googletest` 1.17.0.bcr.2, `google_benchmark` 1.9.4/1.9.5, `rules_python` 1.7.0). We diffed against them; we did not select them |
 
 Bazel itself: **7.5.0** (VSCode, pinned in `.bazelversion`) and **9.2.0**

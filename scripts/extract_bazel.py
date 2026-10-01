@@ -54,6 +54,8 @@ _LINK = {"CppLink", "CppArchive"}
 # both Bazel-specific, not real compilations -- skipped, like C++ header
 # processing.) Mapped to the neutral 'JavaCompile' mnemonic the differ groups on.
 _JAVAC = {"Javac"}
+# C# compile mnemonic from rules_dotnet.
+_CSHARP = {"CSharpCompile"}
 # Custom TS rule mnemonic emitted by any2bazel/bazel/rules/ts_program.bzl.
 _TSPROGRAM = {"TsProgram"}
 
@@ -276,7 +278,19 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
     for action in container.get("actions", []):
         mnem = action.get("mnemonic", "")
         name = _label_to_name(labels.get(action.get("targetId"), ""))
-        args = tuple(action.get("arguments", []))
+        args = []
+        for arg in action.get("arguments", []):
+            if arg.startswith("@"):
+                param_file = os.path.join(repo_root, arg[1:])
+                if os.path.exists(param_file):
+                    with open(param_file, "r", encoding="utf-8") as pf:
+                        for line in pf:
+                            args.append(line.strip())
+                else:
+                    args.append(arg)
+            else:
+                args.append(arg)
+        args = tuple(args)
         outs = tuple(artifacts.get(o, "") for o in action.get("outputIds", []))
 
         if mnem in _COMPILE:
@@ -304,6 +318,12 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
             # Record under the neutral 'JavaCompile' mnemonic the differ groups on.
             t = target_for(name, TargetKind.STATIC)
             t.actions.append(Action(mnemonic="JavaCompile", arguments=args,
+                                    outputs=outs))
+            continue
+        elif mnem in _CSHARP:
+            # C# compile produces an assembly (.dll or .exe)
+            t = target_for(name, TargetKind.UNKNOWN)
+            t.actions.append(Action(mnemonic="CSharpCompile", arguments=args,
                                     outputs=outs))
             continue
         elif mnem in _TSPROGRAM:
@@ -340,6 +360,7 @@ def _classify_bazel(t: Target) -> TargetRole:
     has_compile = any(
         (a.mnemonic in _COMPILE and _is_real_compile(a.arguments))
         or a.mnemonic == "JavaCompile"
+        or a.mnemonic == "CSharpCompile"
         for a in t.actions)
     if not has_compile and t.kind != TargetKind.INTERFACE:
         return TargetRole.AGGREGATE

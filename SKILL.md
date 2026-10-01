@@ -27,6 +27,7 @@ mnemonic-aware differ compares each against a Bazel `aquery` model.
 | **CMake** | File API codemodel-v2 | C/C++ compile + link parity | **Mature** — the validated path, detailed below |
 | **Maven** | forked `javac` argfiles | Java source-set parity | **Early** — argv-floor only |
 | **VSCode / npm** | esbuild/tsc/`child_process` instrumentation | standalone TS emit check | **Experimental** — not wired into the main loop |
+| **MSBuild** | `.binlog` files | C/C++ compile + link, C# source-set | **Planned** — MSVC-compatible toolchain only |
 
 **Trust and detail the CMake path.** The numbered procedure below is the
 CMake→Bazel loop. The Maven and npm frontends share the model and differ but are
@@ -393,6 +394,19 @@ Worked example, with byte-parity results and the failure modes a bespoke JS
 build brings (no action graph to extract, traversal-order-dependent output,
 `node_modules` as both toolchain and foreign Bazel package):
 [docs/CASE-vscode-migration.md](docs/CASE-vscode-migration.md).
+
+### MSBuild → Bazel (planned)
+
+Extracts from an MSBuild Binary Log (`.binlog`). **Requires an MSVC-compatible toolchain on the Bazel side** (native `cl.exe` on Windows via `rules_cc`, or `hermetic-llvm` with `clang-cl` for cross-compilation) to ensure native MSVC flag syntax parsing without lossy GNU-translation.
+
+```bash
+msbuild <project.sln> -bl:msbuild.binlog
+dotnet run --project scripts/msbuild_reader/BinlogToJson.csproj msbuild.binlog > msbuild.json
+python3 scripts/extract_msbuild.py msbuild.json <repo_root> model.msbuild.json
+bazel aquery 'mnemonic("CppCompile|CppLink|CSharpCompile", //...)' --config=windows --output=jsonproto > aquery.json
+python3 scripts/extract_bazel.py aquery.json <repo_root> model.bazel.json
+python3 scripts/diff.py model.msbuild.json model.bazel.json > diff.json
+```
 
 ## Tests
 

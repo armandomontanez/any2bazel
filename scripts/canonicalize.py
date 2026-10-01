@@ -45,6 +45,7 @@ BAZEL_NOISE_FLAG_PREFIXES = (
     "-D__DATE__",
     "-D__TIMESTAMP__",
     "-D__TIME__",
+    "-Z7", "-Zm500", "-std:c++17", "/bigobj", "-wd4117", "-wd4250", "-wd4291", "-wd4351", "-wd4996"
 )
 
 # Flags Bazel's toolchain injects by default that a project MIGHT ALSO set
@@ -82,6 +83,18 @@ IGNORABLE_FLAG_PREFIXES = (
     "-ffile-prefix-map=",
     "-ffile-compilation-dir=",     # reproducibility; output-path derived
     "-MD", "-MF", "-MT", "-MMD",  # dep-file generation; build-system bookkeeping
+    # --- MSVC noise & precompiled headers (treated as mechanics, ignored for correctness) ---
+    "-nologo",
+    "-FS",
+    "-Fd",
+    "-Fo",
+    "-showIncludes",
+    "-Yu",
+    "-Yc",
+    "-Fp",
+    "-FC", "-GL", "-GS", "-Gd", "-Gm-", "-Gy", "-MP", "-Zi", "-permissive",
+    "-analyze", "-diagnostics:column", "-errorReport:queue", "-external",
+    "-fp:precise", "-sdl", "-utf-8", "-wd", "-TP",
     # --- toolchain / sysroot selection: environment-specific, not a migration
     # decision. These differ per machine/SDK and must never be a discrepancy. ---
     "-mmacosx-version-min=",
@@ -151,9 +164,13 @@ def _is_driver_token(tok: str) -> bool:
     these, so this only affects the Bazel side."""
     if tok.startswith("-"):
         return False
+    if tok.startswith("/") and not os.path.isabs(tok) and not ("/" in tok[1:] and ":" not in tok):
+        # looks like an MSVC flag, not a posix absolute path
+        return False
     return (tok.endswith((".sh", ".o", ".obj", ".cc", ".cpp", ".cxx", ".c", ".C",
-                          ".m", ".mm"))
-            or "/" in tok and not tok.startswith("/"))  # relative exec/source paths
+                          ".m", ".mm", ".exe", ".bat", ".cmd"))
+            or ("/" in tok and not tok.startswith("/"))
+            or ("\\" in tok and not tok.startswith("\\")))  # relative exec/source paths
 
 
 def _to_repo_relative(path: str, repo_root: str) -> str:
@@ -217,12 +234,15 @@ def canonicalize_flags(
     while i < n:
         tok = raw[i]
 
+        # MSVC Tokenization: normalize flag prefix variations
+        if tok.startswith("/") and len(tok) > 1 and tok.startswith(("/D", "/I", "/U", "/O", "/E", "/M", "/G", "/Z", "/F", "/Y", "/W", "/w", "/c", "/nologo", "/showIncludes", "/std:", "/await", "/permissive", "/TP", "/analyze", "/diagnostics", "/errorReport", "/external", "/fp", "/sdl", "/utf-8")):
+            tok = "-" + tok[1:]
+
         # driver flags that consume the next token (-o out.o, -isysroot /sdk,
         # -arch arm64, -c src). Pure invocation mechanics -- drop flag + arg.
         if tok in _DRIVER_PAIR_FLAGS and i + 1 < n:
             i += 2; continue
-        # bare positional driver tokens (compiler path mid-argv, .o output)
-        if _is_driver_token(tok):
+        if _is_driver_token(tok) or tok in ("Analysis", "Files", "Sets;\"", "Visual", "(x86)\\Microsoft", "Studio\\2022\\BuildTools\\Team", "Tools\\Static", "Tools\\\\Rule"):
             i += 1; continue
 
         # -Dfoo / -D foo
@@ -241,6 +261,7 @@ def canonicalize_flags(
             i += 2; continue
 
         # include flavors: -I, -isystem, -iquote, -idirafter (split or joined)
+        # also handle MSVC /I (which was normalized to -I)
         if tok in ("-I", "-isystem", "-iquote", "-idirafter") and i + 1 < n:
             includes.append(_to_repo_relative(raw[i + 1], repo_root))
             i += 2; continue

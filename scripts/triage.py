@@ -47,8 +47,15 @@ def _histogram(discs: List[dict], kind: str, side: str) -> Counter:
     c: Counter = Counter()
     for d in discs:
         if d.get("kind") == kind:
-            for v in (d.get(side) or []):
-                c[v] += 1
+            if side == "cmake_only" and kind in ("missing_tu", "missing_java_src", "missing_cs_src", "missing_test_tu"):
+                if "tu" in d:
+                    c[d["tu"]] += 1
+            elif side == "bazel_only" and kind in ("extra_tu", "extra_java_src", "extra_cs_src", "extra_test_tu"):
+                if "tu" in d:
+                    c[d["tu"]] += 1
+            else:
+                for v in (d.get(side) or []):
+                    c[v] += 1
     return c
 
 
