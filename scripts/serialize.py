@@ -30,6 +30,27 @@ from model import (Action, BuildSystem, CanonicalModel, ConfiguredFile,
                    Dependency, Target, TargetKind, TargetRole)
 
 
+def _dep(d: Dependency) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"name": d.name, "external": d.external}
+    if d.origin:
+        out["origin"] = d.origin
+    if d.version:
+        out["version"] = d.version
+    return out
+
+
+def _action(a: Action) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "mnemonic": a.mnemonic,
+        "arguments": list(a.arguments),
+        "inputs": list(a.inputs),
+        "outputs": list(a.outputs),
+    }
+    if a.cwd:
+        out["cwd"] = a.cwd
+    return out
+
+
 def dump_model(m: CanonicalModel, path: str) -> None:
     obj: Dict[str, Any] = {
         "build_system": m.build_system.value,
@@ -37,6 +58,14 @@ def dump_model(m: CanonicalModel, path: str) -> None:
         "targets": {},
         "configured_files": {},
     }
+    # Optional annotations are written only when a frontend set them, so models
+    # from frontends that never do are byte-for-byte what they were.
+    if m.config:
+        obj["config"] = dict(m.config)
+    if m.toolchain:
+        obj["toolchain"] = dict(m.toolchain)
+    if m.path_map:
+        obj["path_map"] = [[frm, to] for frm, to in m.path_map]
     for cname, c in m.configured_files.items():
         obj["configured_files"][cname] = {
             "name": c.name,
@@ -46,37 +75,38 @@ def dump_model(m: CanonicalModel, path: str) -> None:
             "is_compile_input": c.is_compile_input,
         }
     for name, t in m.targets.items():
-        obj["targets"][name] = {
+        entry: Dict[str, Any] = {
             "kind": t.kind.value,
             "role": t.role.value,
-            "deps": [{"name": d.name, "external": d.external} for d in t.deps],
-            "actions": [
-                {
-                    "mnemonic": a.mnemonic,
-                    "arguments": list(a.arguments),
-                    "inputs": list(a.inputs),
-                    "outputs": list(a.outputs),
-                }
-                for a in t.actions
-            ],
+            "deps": [_dep(d) for d in t.deps],
+            "actions": [_action(a) for a in t.actions],
         }
-    with open(path, "w") as f:
+        if t.attrs:
+            entry["attrs"] = dict(t.attrs)
+        obj["targets"][name] = entry
+    # UTF-8 explicitly: paths can carry non-ASCII characters, and the platform
+    # default encoding on Windows is not UTF-8.
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
 
 
 def load_model(path: str) -> CanonicalModel:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         obj = json.load(f)
     m = CanonicalModel(
         build_system=BuildSystem(obj.get("build_system", "unknown")),
         repo_root=obj.get("repo_root", ""),
+        config=dict(obj.get("config", {})),
+        toolchain=dict(obj.get("toolchain", {})),
+        path_map=[(frm, to) for frm, to in obj.get("path_map", [])],
     )
     for name, t in obj["targets"].items():
         target = Target(
             name=name,
             kind=TargetKind(t["kind"]),
             role=TargetRole(t.get("role", "unknown")),
-            deps=[Dependency(d["name"], d.get("external", False))
+            deps=[Dependency(d["name"], d.get("external", False),
+                             d.get("origin", ""), d.get("version", ""))
                   for d in t.get("deps", [])],
             actions=[
                 Action(
@@ -84,9 +114,11 @@ def load_model(path: str) -> CanonicalModel:
                     arguments=tuple(a.get("arguments", [])),
                     inputs=tuple(a.get("inputs", [])),
                     outputs=tuple(a.get("outputs", [])),
+                    cwd=a.get("cwd", ""),
                 )
                 for a in t.get("actions", [])
             ],
+            attrs=dict(t.get("attrs", {})),
         )
         m.add(target)
     for cname, c in obj.get("configured_files", {}).items():

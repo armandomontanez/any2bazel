@@ -1,0 +1,37 @@
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# version.vcxproj's GenerateVersionData target writes this header INTO THE
+# SOURCE TREE, and version.h includes it by that path. Projects that include
+# version.h without referencing version.vcxproj (UnitTests-CommonUtils does)
+# build only after something else has built this one.
+#
+# The values restate src/Version.props for a local build. The MSBuild target
+# also reads BUILD_SOURCEVERSION / GITHUB_SHA from the environment; a real
+# migration would stamp instead.
+write_file(
+    name = "version_gen",
+    out = "Generated Files/version_gen.h",
+    content = [
+        "#pragma once",
+        "#define VERSION_MAJOR 0",
+        "#define VERSION_MINOR 0",
+        "#define VERSION_REVISION 1",
+        "#define VERSION_BUILD 0",
+        '#define VERSION_CHANNEL L"private"',
+        '#define VERSION_SOURCE_COMMIT L"unknown"',
+        "",
+    ],
+)
+
+cc_library(
+    name = "headers",
+    hdrs = [
+        "version.h",
+        ":version_gen",
+    ],
+    # version.h includes "Generated Files\\version_gen.h" relative to itself,
+    # which only resolves when the generated file sits beside it.
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)

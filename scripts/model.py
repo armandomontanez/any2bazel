@@ -47,6 +47,7 @@ class BuildSystem(str, Enum):
     BAZEL = "bazel"
     MAVEN = "maven"
     NPM = "npm"
+    MSBUILD = "msbuild"
     UNKNOWN = "unknown"
 
 
@@ -73,6 +74,7 @@ class TargetRole(str, Enum):
     DASHBOARD = "dashboard"    # CTest/CDash UTILITY automation, no artifact
     AGGREGATE = "aggregate"    # meta target: only deps, no own sources
     CODEGEN = "codegen"        # generated-code / custom-command target
+    PACKAGE = "package"        # packaging / installer project (MSIX, WiX), not diffed
     UNKNOWN = "unknown"        # could not classify -- surfaced, not diffed
 
 
@@ -83,9 +85,16 @@ class Dependency:
     `name` is the abstract library name (e.g. 'zlib', 'fmt', or a coordinate
     like 'com.google.guava:guava'). `external` marks deps from outside the
     project tree. How this maps to a target build label is the backend's job.
+
+    `origin` and `version` say WHERE an external dep comes from when the
+    frontend knows (MSBuild: 'winsdk', 'msvc', 'nuget', 'vcpkg', ...). They are
+    descriptive -- the differ still aligns deps by `name` -- and are left empty
+    by frontends that cannot tell.
     """
     name: str
     external: bool = False
+    origin: str = ""
+    version: str = ""
 
 
 @dataclass
@@ -101,11 +110,17 @@ class Action:
                  source list, or a link action's object/archive inputs). May be
                  empty -- the differ then infers sources from argv.
       outputs    declared output paths (annotation).
+      cwd        the directory the command ran in, when it is not the repo
+                 root. Relative paths in `arguments` are relative to it (an
+                 MSBuild compile runs in the project directory and passes
+                 `/I..\\common`). Empty means the repo root, which is what
+                 Bazel and the CMake frontend produce.
     """
     mnemonic: str
     arguments: Tuple[str, ...] = ()
     inputs: Tuple[str, ...] = ()
     outputs: Tuple[str, ...] = ()
+    cwd: str = ""
 
 
 @dataclass
@@ -149,12 +164,17 @@ class ConfiguredFile:
 class Target:
     """A build target. Holds raw ACTIONS plus resolved annotations
     (kind/role/deps). Compile flags and link flags are NOT stored -- they are
-    reconstructed from `actions` by the differ."""
+    reconstructed from `actions` by the differ.
+
+    `attrs` is a free-form string map for facts a frontend knows about the
+    target that the differ does not compare but a reader needs (MSBuild:
+    project file, configuration, platform, output path, test framework)."""
     name: str
     kind: TargetKind
     actions: List[Action] = field(default_factory=list)
     deps: List[Dependency] = field(default_factory=list)   # link closure (annotation)
     role: "TargetRole" = None  # set in __post_init__ if left unspecified
+    attrs: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.role is None:
@@ -170,6 +190,18 @@ class CanonicalModel:
     targets: Dict[str, Target] = field(default_factory=dict)
     # Project-wide CONFIGURE-TIME generated files (configure_file outputs).
     configured_files: Dict[str, "ConfiguredFile"] = field(default_factory=dict)
+    # How the build was invoked: the facts that select one build out of the
+    # several a project supports (MSBuild: configuration, platform, solution).
+    config: Dict[str, str] = field(default_factory=dict)
+    # The toolchain the build resolved to (MSVC: toolset version, Windows SDK
+    # version, target architecture). Compared across sides: flag parity between
+    # two different compilers means little.
+    toolchain: Dict[str, str] = field(default_factory=dict)
+    # External root directories and the stable token each is known by, longest
+    # path first, e.g. ("C:\\src\\packages\\Foo.1.2.3", "@nuget/foo"). The
+    # differ rewrites this side's paths through it so a machine-specific
+    # location compares as the dependency it is.
+    path_map: List[Tuple[str, str]] = field(default_factory=list)
 
     def add(self, t: Target) -> None:
         self.targets[t.name] = t

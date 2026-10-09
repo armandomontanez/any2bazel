@@ -1,0 +1,53 @@
+module(name = "winget_cli")
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# NuGet packages: URL from the feed's PackageBaseAddress (src/nuget.config ->
+# index.json), version and integrity from msbuild.report.json -> externals.
+_NUGET = "https://ms-feed-25.pkgs.visualstudio.com/6f084628-a36d-42cb-934d-057357e379dc/_packaging/52ee4efa-5537-4eae-acb1-a914a4cca686/nuget/v3/flat2"
+
+http_archive(
+    name = "nuget_wil",
+    build_file = "//bazel/nuget:wil.BUILD.bazel",
+    integrity = "sha512-lXaPWN1jO3Hjix/vhK3Ctm5p/gGO2Qmkd5FYvcD5yOHigOYM3WaS+DnzuSBXCUt3RjCLVIQFxl3QDHyLpxDTBA==",
+    type = "zip",
+    url = _NUGET + "/microsoft.windows.implementationlibrary/1.0.250325.1/microsoft.windows.implementationlibrary.1.0.250325.1.nupkg",
+)
+
+http_archive(
+    name = "nuget_cppwinrt",
+    build_file = "//bazel/nuget:cppwinrt.BUILD.bazel",
+    integrity = "sha512-l1Ia+KxTp5afAic6X6ZhFoD54ke56Q/EecWpUosO19juCndSAvhLwl0Qc2fRKLk5kg25c6wV3d5hwlOoUJtvyg==",
+    type = "zip",
+    url = _NUGET + "/microsoft.windows.cppwinrt/3.0.260520.1/microsoft.windows.cppwinrt.3.0.260520.1.nupkg",
+)
+
+windows_sdk = use_repo_rule("//bazel:windows_sdk.bzl", "windows_sdk")
+
+windows_sdk(
+    name = "windows_sdk",
+    version = "10.0.26100.0",
+)
+
+vcpkg_install = use_repo_rule("//bazel:vcpkg.bzl", "vcpkg_install")
+
+vcpkg_install(
+    name = "vcpkg",
+    manifest = "//src:vcpkg.json",
+    # Directories next to the manifest that it refers to (overlay triplets and ports).
+    recipe_dirs = ["VcpkgCustomTriplets", "VcpkgPortOverlay"],
+    # The project generates its overlay ports with a script before installing.
+    prepare = [
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", "VcpkgPortOverlay/CreatePortOverlay.ps1",
+        "-StampFile", "VcpkgPortOverlay/.created",
+    ],
+    triplet = "x64-release",
+)
+
+msvc_toolset = use_repo_rule("//bazel:msvc_toolset.bzl", "msvc_toolset")
+
+# Version and VC directory come from BAZEL_VC / BAZEL_VC_FULL_VERSION (.bazelrc).
+msvc_toolset(name = "msvc")

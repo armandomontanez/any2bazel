@@ -44,11 +44,25 @@ from typing import Dict, List, Optional
 
 
 def _histogram(discs: List[dict], kind: str, side: str) -> Counter:
+    """Value -> frequency for one kind and side.
+
+    Presence kinds carry no value list: a `missing_tu` IS its source, a
+    `missing_target` its target. Those are counted by that name on the side
+    they belong to (`missing_*` is reference-only, `extra_*` is Bazel-only), so
+    the summary says WHICH sources are missing instead of printing a bare
+    count."""
+    presence_side = ("cmake_only" if kind.startswith("missing_")
+                     else "bazel_only" if kind.startswith("extra_") else "")
     c: Counter = Counter()
     for d in discs:
-        if d.get("kind") == kind:
-            for v in (d.get(side) or []):
-                c[v] += 1
+        if d.get("kind") != kind:
+            continue
+        values = d.get(side) or []
+        if not values and side == presence_side and not (d.get("cmake_only") or d.get("bazel_only")):
+            name = d.get("tu") or d.get("target")
+            values = [name] if name else []
+        for v in values:
+            c[v] += 1
     return c
 
 

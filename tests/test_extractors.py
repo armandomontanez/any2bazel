@@ -476,6 +476,155 @@ def test_ts_program_splits_into_per_file_tscompile_actions():
         assert t.role.value == "production", t.role
 
 
+# ---- Bazel on Windows (MSVC toolchain) ---------------------------------------
+
+_MSVC_CL = ("C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/"
+            "14.44.35207/bin/HostX64/x64/cl.exe")
+_MSVC_INCLUDE = ("C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools"
+                 "\\MSVC\\14.44.35207\\include;C:\\Program Files (x86)\\Windows Kits\\10\\include"
+                 "\\10.0.26100.0\\ucrt;C:\\Program Files (x86)\\Windows Kits\\10\\include"
+                 "\\10.0.26100.0\\um")
+
+
+def _windows_aquery():
+    """A cc_library and a cc_binary as rules_cc's MSVC toolchain reports them.
+    Under `//...` a Windows cc_library emits an archive AND a DLL."""
+    return {
+        "artifacts": [{"id": 1, "pathFragmentId": 1}, {"id": 2, "pathFragmentId": 2},
+                      {"id": 3, "pathFragmentId": 3}],
+        "pathFragments": [{"id": 1, "label": "core.lib"}, {"id": 2, "label": "core.dll"},
+                          {"id": 3, "label": "tool.exe"}],
+        "targets": [{"id": 1, "label": "//src:core"}, {"id": 2, "label": "//src:tool"}],
+        "actions": [
+            {"mnemonic": "CppCompile", "targetId": 1, "outputIds": [],
+             "arguments": [_MSVC_CL, "/nologo", "/DNOMINMAX", "/I.", "/MD", "/c",
+                           "src/core.cpp", "/Fobazel-out/x64_windows-opt/bin/core.obj"],
+             "environmentVariables": [{"key": "INCLUDE", "value": _MSVC_INCLUDE},
+                                      {"key": "PATH", "value": "C:\\x"}]},
+            # Deliberately archive first, then the DLL link.
+            {"mnemonic": "CppArchive", "targetId": 1, "outputIds": [1],
+             "arguments": ["lib.exe", "/OUT:core.lib", "core.obj"]},
+            {"mnemonic": "CppLink", "targetId": 1, "outputIds": [2],
+             "arguments": ["link.exe", "/DLL", "/OUT:core.dll", "core.obj"]},
+            {"mnemonic": "CppCompile", "targetId": 2, "outputIds": [],
+             "arguments": [_MSVC_CL, "/nologo", "/c", "src/main.cpp"]},
+            {"mnemonic": "CppLink", "targetId": 2, "outputIds": [3],
+             "arguments": ["link.exe", "/OUT:tool.exe", "main.obj", "core.lib"]},
+        ],
+    }
+
+
+def _extract_bazel(aquery, raw=None):
+    with tempfile.TemporaryDirectory() as root:
+        aq_path = os.path.join(root, "aquery.json")
+        with open(aq_path, "wb") as f:
+            f.write(raw if raw is not None else json.dumps(aquery).encode("utf-8"))
+        return extract_bazel.extract(aq_path, "C:\\work\\proj")
+
+
+def test_bazel_msvc_toolchain_facts_are_recorded():
+    b = _extract_bazel(_windows_aquery())
+    # Version and target arch from the compiler path; the SDK version from the
+    # INCLUDE environment, where the toolchain passes system include dirs.
+    assert b.toolchain == {"compiler": "msvc", "msvc_version": "14.44.35207",
+                           "target_arch": "x64", "winsdk_version": "10.0.26100.0"}
+
+
+def test_non_msvc_bazel_model_records_no_toolchain():
+    assert _extract_bazel(AQUERY).toolchain == {}
+
+
+def test_windows_cc_library_with_archive_and_dll_stays_a_library():
+    b = _extract_bazel(_windows_aquery())
+    assert b.targets["src:core"].kind.value == "static_library"
+    assert b.targets["src:tool"].kind.value == "executable"
+    tu = _view(b, "src:core").tus[0]
+    assert tu.source == "src/core.cpp"
+    assert tu.defines == ("NOMINMAX",) and "/MD" in tu.flags
+
+
+def test_bazel_reads_an_aquery_file_powershell_wrote_as_utf16():
+    # `bazel aquery ... > aquery.json` in PowerShell 5 produces UTF-16 with a BOM.
+    b = _extract_bazel(None, raw=json.dumps(_windows_aquery()).encode("utf-16"))
+    assert "src:core" in b.targets
+
+
+def test_bazel_param_file_contents_are_spliced_into_argv():
+    # rules_cc's MSVC toolchain will not let the linker param file be switched
+    # off; `aquery --include_param_files` reports its content instead.
+    aquery = _windows_aquery()
+    link = aquery["actions"][-1]
+    link["arguments"] = ["link.exe", "@bazel-out/x64_windows-opt/bin/tool.exe-2.params"]
+    link["paramFiles"] = [{"execPath": "bazel-out/x64_windows-opt/bin/tool.exe-2.params",
+                           "arguments": ["/OUT:tool.exe", "/SUBSYSTEM:WINDOWS", "main.obj",
+                                         "advapi32.lib"]}]
+    b = _extract_bazel(aquery)
+    view = _view(b, "src:tool")
+    assert view.link_flags == ("/SUBSYSTEM:WINDOWS",)
+    assert [(d.name, d.external) for d in view.deps] == [("advapi32", True)]
+    # An unknown @file is left alone rather than dropped.
+    link["arguments"].append("@elsewhere.params")
+    assert "@elsewhere.params" in _extract_bazel(aquery).targets["src:tool"].actions[-1].arguments
+
+
+def test_bazel_csharp_sources_come_from_declared_inputs():
+    # rules_dotnet passes sources in a param file that aquery never writes.
+    aquery = {
+        "artifacts": [{"id": 1, "pathFragmentId": 1}, {"id": 2, "pathFragmentId": 2},
+                      {"id": 3, "pathFragmentId": 3}],
+        "pathFragments": [{"id": 10, "label": "src"}, {"id": 1, "label": "Program.cs", "parentId": 10},
+                          {"id": 2, "label": "System.Runtime.dll"}, {"id": 3, "label": "tool.dll"}],
+        "targets": [{"id": 1, "label": "//src:tool"}],
+        "depSetOfFiles": [{"id": 1, "directArtifactIds": [1, 2]}],
+        "actions": [{"mnemonic": "CSharpCompile", "targetId": 1, "inputDepSetIds": [1],
+                     "outputIds": [3], "arguments": ["dotnet", "csc.dll", "@tool.rsp"]}],
+    }
+    b = _extract_bazel(aquery)
+    (action,) = b.targets["src:tool"].actions
+    assert action.mnemonic == "CSharpCompile"
+    assert [p.replace("\\", "/") for p in action.inputs] == ["src/Program.cs"]
+    assert b.targets["src:tool"].role.value == "production"
+    (group,) = _view(b, "src:tool").compile_groups
+    assert (group.language, group.sources) == ("csharp", ("src/Program.cs",))
+
+
+def test_model_annotations_round_trip_and_stay_out_of_old_models():
+    from model import (Action, BuildSystem, CanonicalModel, Dependency, Target,
+                       TargetKind, TargetRole)
+    from serialize import dump_model, load_model
+    m = CanonicalModel(build_system=BuildSystem.MSBUILD, repo_root="C:\\work\\proj",
+                       config={"configuration": "Release"},
+                       toolchain={"msvc_version": "14.44.35207"},
+                       path_map=[("C:\\work\\proj\\packages\\Foo.1.2.3", "@nuget/foo")])
+    m.add(Target("app", TargetKind.EXECUTABLE, role=TargetRole.PACKAGE,
+                 actions=[Action("CppCompile", ("cl.exe", "a.cpp"), cwd="C:\\work\\proj\\src")],
+                 deps=[Dependency("kernel32", True, origin="winsdk", version="10.0.26100.0")],
+                 attrs={"project": "src/app.vcxproj"}))
+    plain = CanonicalModel(build_system=BuildSystem.CMAKE, repo_root="/work")
+    plain.add(Target("lib", TargetKind.STATIC, role=TargetRole.PRODUCTION,
+                     actions=[Action("CppCompile", ("-c", "a.cc"))],
+                     deps=[Dependency("z", True)]))
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "m.json")
+        dump_model(m, path)
+        back = load_model(path)
+        assert back.config == m.config and back.toolchain == m.toolchain
+        assert back.path_map == m.path_map
+        t = back.targets["app"]
+        assert t.role == TargetRole.PACKAGE and t.attrs == {"project": "src/app.vcxproj"}
+        assert t.actions[0].cwd == "C:\\work\\proj\\src"
+        assert t.deps == [Dependency("kernel32", True, "winsdk", "10.0.26100.0")]
+        # A model that sets none of them serializes exactly as it used to.
+        dump_model(plain, path)
+        with open(path) as f:
+            obj = json.load(f)
+        assert set(obj) == {"build_system", "repo_root", "targets", "configured_files"}
+        assert set(obj["targets"]["lib"]) == {"kind", "role", "deps", "actions"}
+        assert obj["targets"]["lib"]["deps"] == [{"name": "z", "external": True}]
+        assert set(obj["targets"]["lib"]["actions"][0]) == {"mnemonic", "arguments", "inputs",
+                                                            "outputs"}
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

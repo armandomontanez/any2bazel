@@ -1,7 +1,7 @@
 <div align="center">
   <h1>any2bazel</h1>
   <p>
-    Generate and maintain <a href="https://bazel.build">Bazel</a> build files for a project so they remain in sync with another build system (<strong>CMake</strong>, <strong>Maven</strong>, and more) — whether as part of a migration, or to keep parallel builds consistent.
+    Generate and maintain <a href="https://bazel.build">Bazel</a> build files for a project so they remain in sync with another build system (<strong>CMake</strong>, <strong>MSBuild</strong>, <strong>Maven</strong>, and more) — whether as part of a migration, or to keep parallel builds consistent.
   </p>
 
 [![license][license]][license-url]
@@ -60,6 +60,7 @@ deterministic diff drives the loop — an LLM does only the creative work
 | Frontend | Reference source | Status |
 | :------- | :--------------- | :----- |
 | **CMake** | File API codemodel-v2 | **Mature** — the validated path |
+| **MSBuild** | binary log + tracking logs | **New** — C/C++ parity in the MSVC dialect; C# source sets; Windows only |
 | **Maven** | forked `javac` argfiles | **Early** — argv-floor only |
 | **VSCode / npm** | esbuild/tsc/`child_process` instrumentation | **Experimental** — standalone TS emit check |
 
@@ -69,6 +70,7 @@ deterministic diff drives the loop — an LLM does only the creative work
 | :------ | :------- | :---- |
 | [Ladybird](docs/CASE-ladybird-migration.md) | CMake | Full case study — performance & flag canonicalization |
 | [VSCode](docs/CASE-vscode-migration.md) | npm/esbuild | 7710/7710 `.js` byte parity |
+| [winget-cli, PowerToys](docs/CASE-winget-cli-migration.md) | MSBuild | A slice: a static library, a DLL and a CppUnitTest DLL under `bazel test`, each with its external dependencies isolated |
 | BoringSSL, Abseil, RE2, fmt, spdlog, TinyXML2, zlib | CMake | See [EXPERIMENTS.md](EXPERIMENTS.md) |
 | Guava | Maven | See [EXPERIMENTS.md](EXPERIMENTS.md) |
 

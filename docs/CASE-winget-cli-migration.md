@@ -1,0 +1,338 @@
+# Case study: winget-cli and PowerToys → Bazel, and what an MSBuild build does not say
+
+**Subjects:** [microsoft/winget-cli](https://github.com/microsoft/winget-cli)
+(`AppInstallerCLI.sln`, Release|x64: 41 targets, 527 C/C++ compiles, C++/WinRT,
+NuGet and vcpkg) and one native test project of
+[microsoft/PowerToys](https://github.com/microsoft/PowerToys)
+(`UnitTests-CommonUtils`, a 36-source CppUnitTest DLL). Both built with MSBuild
+18.10, toolset v145 (MSVC 14.51.36231), Windows SDK 10.0.26100.0; Bazel 9.2.0
+with rules_cc 0.2.17 on the same compiler.
+
+**Outcome:** this is a **slice**, not a migration. Three targets are built by
+Bazel from trees that contain no MSBuild output:
+
+| Target | What it exercises | Parity diff | Beyond the diff |
+|---|---|---|---|
+| winget `AppInstallerSharedLib.lib` (30 TUs) | NuGet, vcpkg, the C++/WinRT projection, a shared-items project | converged, 0 errors, 0 warnings | projection headers byte-identical to MSBuild's (1,358 files) |
+| winget `winrtact.dll` (6 TUs) | MIDL, `.def`, embedded manifest, Control Flow Guard, Spectre runtime | converged, 0 errors, 0 warnings | same exports, subsystem, DLL characteristics and manifest as MSBuild's DLL; same five Spectre runtime libraries read by the link |
+| PowerToys `Common.Utils.UnitTests.dll` (36 TUs) | static CRT, `/std:c++23preview`, resources, CppUnitTest, vstest | converged, 0 errors, 0 warnings | `bazel test` runs the same 484 tests with the same results as the MSBuild-built DLL |
+
+Twenty-four negative controls — take one flag, define, include directory,
+source, link option or library away from the Bazel side — each break
+convergence. A twenty-fifth (removing a library from the *test* DLL's link) does
+not: test binaries are compared at compile level only, as for every frontend.
+
+The workspace overlays are in [`examples/winget-cli/`](../examples/winget-cli/)
+and [`examples/powertoys/`](../examples/powertoys/).
+
+This document is about what the slice **found**. An MSBuild build is a set of
+project files plus the machine they ran on plus the order they ran in; the
+second and third are not written down anywhere. Expressing three targets in a
+system that requires inputs to be declared was enough to hit every item below.
+§1–§6 are properties of the builds. §7–§8 are about tests. §9 is about the
+tool: places where the frontend was wrong until one of these targets proved it.
+
+---
+
+## 1. Dependencies that exist only as build order
+
+`winrtact.dll` compiles `src/WinGetServer/WinGetServer_c.c`. That file is not in
+the repository. `WinGetServer.vcxproj` produces it: its MIDL step runs in the
+project directory, so `WinGetServer.h`, `WinGetServer_c.c` and
+`WinGetServer_s.c` land **in the source tree**, and three other projects list
+them by relative path:
+
+```
+undeclared_generated_inputs:
+  Microsoft.Management.Configuration.OutOfProc  [src/WinGetServer]
+  Microsoft.Management.Deployment.OutOfProc     [src/WinGetServer]
+  UndockedRegFreeWinRT                          [src/WinGetServer]
+```
+
+None of the three has a `ProjectReference` to `WinGetServer`. The solution
+builds them in an order that works.
+
+PowerToys has the same shape, and there it is easy to demonstrate.
+`UnitTests-CommonUtils` includes `src/common/version/version.h`, which includes
+`"Generated Files\version_gen.h"` — a header `version.vcxproj` writes beside
+itself from `src/Version.props`. The test project does not reference
+`version.vcxproj`. Built on its own from a clean checkout:
+
+```
+src\common\version\version.h(6,10): error C1083: Cannot open include file:
+    'Generated Files\version_gen.h': No such file or directory
+```
+
+Build `version.vcxproj` first and it succeeds.
+
+The extractor now reports this (`generated_inputs` per target, and
+`undeclared_generated_inputs` at the top of the report), from the compiler's
+read tracking log: every generated file a project read, which project's
+directory it sits in, and whether that project is referenced. In Bazel the
+generator is a target (`bazel/midl.bzl`, a `write_file`), its outputs are
+labels, and the consumer names them.
+
+There is a second half to this. With MSBuild's copy of `version_gen.h` still in
+the source tree, the first Bazel build of the PowerToys DLL failed:
+
+```
+undeclared inclusion(s) in rule '//src/common/UnitTests-CommonUtils:Common.Utils.UnitTests.dll':
+  'src/common/version/Generated Files/version_gen.h'
+```
+
+`version.h` includes the file relative to itself, so the compiler found
+MSBuild's leftover before Bazel's generated one. Bazel refused it. That is the
+reason the rule in the reference guide is *build in a tree without MSBuild
+outputs*: a generated file left in the source tree is indistinguishable from a
+source file to everything except the include check.
+
+## 2. An up-to-date check that looks at a stamp, not at the output
+
+The two winget binary logs already on this machine both ended in
+
+```
+error C1083: Cannot open include file: 'winrt/Windows.Foundation.h'
+```
+
+and so did a fresh incremental build.
+`Microsoft.Management.Deployment\x64\Release\Generated Files` was empty. The
+CppWinRT targets use the tool's response files (`*.vcxproj.cppwinrt_*.rsp`,
+`*.mdmerge.rsp`, `*.midlrt.rsp`) as their up-to-date markers. The response
+files were there, so the steps were skipped, and nothing checks that the
+headers they would have produced exist. Deleting the four response files in
+that directory fixed the build.
+
+In Bazel the projection is an action whose output is the directory; it cannot
+be "up to date" and absent.
+
+## 3. The same 1,358 headers, generated once per project
+
+Importing the CppWinRT NuGet package makes a project run `cppwinrt.exe` over
+every contract `.winmd` of the Windows SDK into its own
+`<IntDir>Generated Files`. Fourteen winget projects do. The command line is
+identical apart from the output directory, and the output depends only on the
+tool version and the SDK version.
+
+`bazel/cppwinrt.bzl` runs it once (`//:winrt_platform`). Its output was compared
+with MSBuild's for `AppInstallerSharedLib`: 1,358 files, byte for byte.
+
+For the diff this means several reference include directories correspond to one
+Bazel directory, which `include_map` expresses directly: each project's
+`x64/Release/Generated Files` and `bazel-out/.../winrt_platform` map to the same
+token.
+
+## 4. Every binary is offered every library
+
+vcpkg's MSBuild integration appends `<installed>\lib\*.lib` to every link line.
+The link of `winrtact.dll` opened all thirteen vcpkg libraries of the tree
+(brotli, c-ares, Catch2, curl, …). It uses one, `detours.lib`.
+
+A wildcard names nothing, so the extractor reports those libraries as
+`libraries_offered_by_wildcard` and does not turn them into dependencies. On the
+Bazel side `bazel/vcpkg.bzl` generates one target per port from vcpkg's own file
+lists and the DLL depends on `@vcpkg//:detours`. The Bazel link read exactly one
+vcpkg library.
+
+The same rule is why the vcpkg recipe runs the project's manifest, baseline,
+overlay triplets and overlay ports unmodified instead of taking the libraries
+from somewhere convenient: an earlier attempt at this migration re-sourced
+jsoncpp and yaml-cpp from nuget.org, without a hash, in versions the project
+does not pin.
+
+## 5. The C runtime is chosen by a search path
+
+Both winget targets set `<SpectreMitigation>Spectre</SpectreMitigation>`. On the
+compile line that is `/Qspectre`. On the link line it is only
+
+```
+/LIBPATH:...\VC\Tools\MSVC\14.51.36231\lib\spectre\x64
+```
+
+and the libraries that come from there — `msvcrt.lib`, `msvcprt.lib`,
+`vcruntime.lib`, `oldnames.lib`, `comsuppw.lib` — are named by `/DEFAULTLIB`
+directives inside object files, not on any command line. A Bazel build that
+mirrors every flag of the reference and omits the search path links the
+unmitigated runtime, and nothing fails.
+
+`bazel/msvc_toolset.bzl` exposes the directory of the pinned toolset as
+`@msvc//:spectre_libs` and refuses to build if the component is not installed.
+The differ keeps this one search path as a link fact
+(`/LIBPATH:@msvc/lib/spectre`). `link /VERBOSE:LIB` on the Bazel build and the
+reference link's read log list the same five libraries from that directory.
+
+## 6. Include directories that do not exist
+
+| Project | On the command line | On disk |
+|---|---|---|
+| winget `AppInstallerSharedLib` | `$(ProjectDir)Telemetry` | the directory is `Public\Telemetry` |
+| winget `AppInstallerCLI`, `WinGetUtil`, `WindowsPackageManager` | `src\binver\include` | no such directory |
+| PowerToys `UnitTests-CommonUtils` | `$(VCInstallDir)UnitTest\include`, and `/LIBPATH:$(VCInstallDir)UnitTest\lib` | the framework has lived in `VC\Auxiliary\VS\UnitTest` since Visual Studio 2017 |
+
+The compiler skips a missing include directory silently. The PowerToys test
+project compiles only because Visual Studio also puts the real location on
+every project's default include and library path.
+
+The report lists these as `dead_include_dirs`. They need no Bazel counterpart;
+`ignore.include_prefixes` records the decision.
+
+---
+
+## 7. A test project is not a test
+
+MSBuild builds test projects. Nothing in either repository's MSBuild graph runs
+them.
+
+`UnitTests-CommonUtils` builds a **DLL**. It has no `main`; it exports test
+metadata, and `vstest.console.exe` — part of Visual Studio, found by CI — loads
+it through an adapter. There is nothing for `cc_test` to execute. The Bazel side
+is a `cc_binary(linkshared = True)` plus `vstest_test` (`bazel/vstest.bzl`),
+which runs the DLL with the runner of the *pinned* Visual Studio instance and
+writes a TRX report to the test's outputs.
+
+| | Discovered | Passed | Failed |
+|---|---|---|---|
+| MSBuild-built DLL, `vstest.console.exe` | 484 | 481 | 3 |
+| Bazel-built DLL, `bazel test` | 484 | 480 | 4 |
+
+The three common failures are named-pipe security tests that depend on the
+account running them. The fourth, `ThreadSafety_ConcurrentAccessAndRead_NoDataRace`,
+was then run six times against each DLL alone: it failed twice against each.
+It is flaky in the source, not different between the builds. With every MSBuild
+output moved out of the tree and after `bazel clean`, the DLL rebuilt from
+nothing and the run was the same (that test filtered out: 483 run, 480 passed,
+the same 3 failed).
+
+winget's native tests are the other common shape: `AppInstallerCLITests.exe` is
+a Catch2 executable with its own `main`. Its project copies **268 data files**
+from `TestData\` flat into the output directory next to the executable, and the
+tests find them through the executable's path. In Bazel those are `data`, and
+the lookup becomes a runfiles path or an argument. The report records each copy
+under `steps`. That binary was not built here (it needs five libraries outside
+the slice), so this part is described, not verified.
+
+## 8. Warnings in other people's headers
+
+The PowerToys DLL compiles with `/W4 /WX`. Its first Bazel build failed inside
+spdlog:
+
+```
+spdlog/common.h(32): error C2220: the following warning is treated as an error
+spdlog/common.h(32): warning C4005: 'SPDLOG_HEADER_ONLY': macro redefinition
+```
+
+MSBuild passes `/external:anglebrackets /external:W0` and sets `EXTERNAL_INCLUDE`
+(from the `ExternalIncludePath` property) to the vcpkg and NuGet directories.
+Headers reached that way produce no warnings. The environment variable is not
+on the command line, and the two flags are diagnostics, which the differ
+ignores on purpose.
+
+So a set of options that changes nothing about the output decides whether the
+build passes. The report now carries them (`external_headers`: the flags and
+the directories), and the Bazel target repeats the flags in `copts`.
+
+---
+
+## 9. What the frontend got wrong until these targets proved it
+
+**An incremental build logs almost nothing.** Of the 549 compile actions in the
+winget model (527 C/C++, 22 C#), 169 have a command line in the binary log. The
+rest were up to date, and MSBuild logs no command for a compile it skips. They
+come from the tracking logs MSBuild itself checks (366) and from skipped C#
+targets' declared inputs (14). An earlier attempt that read only the log ended
+up with 8 targets in its model. The extractor now accounts for every evaluated
+source and fails if one is unrecovered.
+
+**"Converged" with nothing compared.** The first PowerToys diff said
+`CONVERGED errors=0 warnings=2`. Reference test targets were only compared with
+Bazel *test* targets, and a `cc_binary` DLL is not one to `aquery`; the 36
+sources had been matched by name and their flags never looked at. The two
+warnings said so, quietly. A `target_map` entry that pairs a Bazel target with a
+reference test now gives it the test role. With that, the same diff reported 30
+real include differences (§6), and seven controls on that target fire.
+
+**A library that is merely an input is not linked.** Bazel-side dependencies
+were inferred from every `.lib` among a link action's inputs. Declaring the
+Spectre directory made its 44 libraries inputs, so the diff believed
+`winrtact.dll` linked all of them, and removing `comsuppw.lib` from the command
+line would have gone unnoticed. For MSVC links only the command line counts
+now, and that control fires.
+
+**Link options resolve last-wins, like compile options.** rules_cc puts
+`/SUBSYSTEM:CONSOLE` on every link. Comparing flags as a set, a project's
+`/SUBSYSTEM:WINDOWS` matched whether it came after the default (a GUI image) or
+before it (not one). Checked with `dumpbin`: the last one wins, for
+`/SUBSYSTEM`, `/MANIFEST`, `/DYNAMICBASE` and `/guard`. The same experiment
+showed that `/DYNAMICBASE` and `/NXCOMPAT` are what the linker does unasked,
+and that `/MANIFEST` is **not**: a bare `link.exe` writes no manifest.
+
+**rules_cc's defaults cannot be turned off, and are not MSBuild's.** The MSVC
+toolchain defines `NOMINMAX`, `_CRT_SECURE_NO_DEPRECATE`,
+`_CRT_SECURE_NO_WARNINGS` and `_WIN32_WINNT=0x0601` on every compile;
+`--features=-default_compile_flags` fails analysis. MSBuild defines none of
+them. A winget source that defines `NOMINMAX` itself is then a C4005
+redefinition, an error under `/WX`. The recipe is four lines of `.bazelrc`
+(`/U...`, and `BAZEL_WIN32_WINNT=/U_WIN32_WINNT`), after which the effective
+defines on the two sides are equal.
+
+**Paths.** Tracking logs upper-case every path. Restoring the case from disk
+failed for paths outside the project directory (`/I..\UTILS`) and for
+directories that do not exist, so config rules for include paths now match
+case-insensitively on Windows builds.
+
+Two environment limits, found the hard way and worth knowing before choosing
+where to put a checkout:
+
+- vcpkg run from MSBuild builds under `<repo>\vcpkg_installed\...\blds`. From a
+  checkout whose root path was 141 characters long, CMake's compiler check
+  overflowed `MAX_PATH` and the port failed to configure. (Bazel's copy builds
+  under the output base, which is short.)
+- The file tracker does not record reads under `%TEMP%`. A checkout there has
+  complete command tracking logs but incomplete read logs, so
+  `generated_inputs` under-reports.
+
+---
+
+## What is not done
+
+- **38 of winget's 41 targets and all but one PowerToys project.** In
+  particular nothing that needs a WinRT *component* projection (`midl /winrt`,
+  `mdmerge`, `cppwinrt -component`), no executable, no C# project and no
+  packaging project (MSIX, WiX). They are extracted and reported.
+- **`AppInstallerCLITests` under `bazel test`** (§7).
+- **Link parity of test binaries.** Compared at compile level only.
+- **Build type.** `/O2 /Oi /GL` and `/LTCG` are not mirrored. The two
+  `winrtact.dll` builds differ in one imported API set
+  (`api-ms-win-crt-math`).
+- **Precompiled headers.** rules_cc has none for MSVC; every source parses
+  `pch.h` itself.
+- **Hermeticity.** The compiler, SDK, vcpkg and vstest are the host's, pinned by
+  version and checked, not downloaded. vcpkg runs in a repository rule.
+- **`version_gen.h` restates `src/Version.props`** in a BUILD file. MSBuild also
+  folds `BUILD_SOURCEVERSION` / `GITHUB_SHA` from the environment into it; the
+  Bazel equivalent is stamping.
+- **Linux.** Extraction needs MSBuild and the build tree. The differ and its
+  tests run anywhere; they were run on Windows and under a POSIX-path
+  emulation, not on a Linux machine.
+
+## Appendix: reproducing
+
+```bash
+# Reference (from the repo root; a full build, or an incremental one after it)
+msbuild src\AppInstallerCLI.sln -restore -p:RestorePackagesConfig=true \
+    -p:Configuration=Release -p:Platform=x64 -m -bl:msbuild.binlog
+python3 scripts/extract_msbuild.py msbuild.binlog . model.msbuild.json --report msbuild.report.json
+
+# Bazel side, in a checkout WITHOUT MSBuild outputs, overlay copied in
+bazel build //src/AppInstallerSharedLib \
+    //src/Xlang/UndockedRegFreeWinRT/src/UndockedRegFreeWinRT/UndockedRegFreeWinRT:winrtact.dll
+bazel aquery 'mnemonic("CppCompile|CppLink|CppArchive", //...)' \
+    --features=-compiler_param_file --include_param_files --output=jsonproto > aquery.json
+python3 scripts/extract_bazel.py aquery.json . model.bazel.json
+python3 scripts/diff.py model.msbuild.json model.bazel.json any2bazel.json > diff.json
+python3 scripts/triage.py diff.json
+```
+
+The findings in §1, §3–§6 and §8 can be read straight out of
+`msbuild.report.json`: `undeclared_generated_inputs`, each target's `steps`,
+`libraries_offered_by_wildcard`, `link_flags`, `dead_include_dirs` and
+`external_headers`.

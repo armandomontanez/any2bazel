@@ -36,6 +36,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import canonicalize_msvc as msvc
 from canonicalize import canonicalize_flags, canonicalize_link_flags
 from model import (Action, BuildSystem, CanonicalModel, Dependency, Target,
                    TargetKind, TranslationUnit)
@@ -43,6 +44,7 @@ from model import (Action, BuildSystem, CanonicalModel, Dependency, Target,
 _COMPILE_MNEMONICS = {"CppCompile", "ObjcCompile"}
 _LINK_MNEMONICS = {"CppLink", "CppArchive"}
 _JAVA_COMPILE_MNEMONICS = {"JavaCompile"}
+_CSHARP_COMPILE_MNEMONICS = {"CSharpCompile"}
 
 _HEADER_EXTS = (".h", ".hpp", ".hh", ".hxx", ".inc", ".inl")
 _SOURCE_EXTS = (".cc", ".cpp", ".cxx", ".c", ".C", ".m", ".mm")
@@ -64,6 +66,7 @@ class CompileGroup:
     key: str
     sources: Tuple[str, ...] = ()      # sorted, repo-relative
     flags: Tuple[str, ...] = ()        # the action's non-source argv (raw, for now)
+    language: str = "java"             # "java" | "csharp": which source set it joins
 
 
 @dataclass
@@ -78,6 +81,7 @@ class TargetView:
     compile_groups: List[CompileGroup] = field(default_factory=list)
     link_flags: Tuple[str, ...] = ()
     deps: List[Dependency] = field(default_factory=list)
+    language: str = ""                 # "c++" / "c#" when the target is single-language
 
     def tu_map(self):
         return {tu.key(): tu for tu in self.tus}
@@ -149,6 +153,32 @@ def _java_compile_group(args, repo_root: str) -> "CompileGroup":
                         sources=tuple(sorted(sources)), flags=tuple(flags))
 
 
+_CSHARP_EXT = ".cs"
+
+
+def _csharp_compile_group(act: Action, repo_root: str, path_map) -> "CompileGroup":
+    """One csc invocation as a source set. Sources are the `.cs` arguments, or
+    the declared inputs when the argv is not available (Bazel passes them in a
+    param file; a compile MSBuild skipped as up to date has no argv at all).
+    Keyed by the `/out:` assembly. Flags are kept raw, like Java's."""
+    sources, flags = [], []
+    out_key = ""
+    for a in act.arguments:
+        low = a.lower()
+        if low.startswith(("/out:", "-out:")):
+            out_key = msvc.norm_path(a[5:], repo_root, act.cwd, path_map)
+            flags.append(a)
+        elif low.endswith(_CSHARP_EXT) and not a.startswith(("/", "-", "@")):
+            sources.append(msvc.norm_path(a, repo_root, act.cwd, path_map))
+        else:
+            flags.append(a)
+    if not sources:
+        sources = [msvc.norm_path(p, repo_root, act.cwd, path_map)
+                   for p in act.inputs if p.lower().endswith(_CSHARP_EXT)]
+    return CompileGroup(key=out_key or "<csc>", sources=tuple(sorted(sources)),
+                        flags=tuple(flags), language="csharp")
+
+
 _LINK_INPUT_LIB_EXTS = (".a", ".lo", ".lib", ".so", ".dylib")
 
 
@@ -206,6 +236,26 @@ def _infer_deps_from_link(actions, existing) -> List[Dependency]:
     for act in actions:
         if act.mnemonic not in _LINK_MNEMONICS:
             continue
+        if msvc.is_msvc_link(act.arguments):
+            # Windows naming: no `lib` prefix to strip, dots are part of the
+            # name, case does not matter. A library is linked when the command
+            # line names it (positional, /DEFAULTLIB:, /WHOLEARCHIVE:). A
+            # declared input is NOT evidence: a whole directory offered through
+            # /LIBPATH (the Spectre CRT, a vcpkg lib dir) is an input, and
+            # counting it would report every library in it as linked and hide a
+            # missing one. Inputs are only used when the command line is
+            # unknown because its response file was not expanded.
+            libs = list(msvc.link_libraries(act.arguments))
+            if any(a.startswith("@") for a in act.arguments[1:]):
+                libs += [p for p in act.inputs if p.lower().endswith(".lib")]
+            for lib in libs:
+                ident = msvc.lib_identity(lib)
+                has_dir = "/" in lib or "\\" in lib
+                if ident and ident not in have:
+                    # A bare name is resolved through LIB: a system library.
+                    deps.append(Dependency(ident, external=(not has_dir) or _is_external_path(lib)))
+                    have.add(ident)
+            continue
         for a in act.arguments:
             if a.startswith("-l"):
                 name = a[2:]
@@ -226,13 +276,34 @@ def _infer_deps_from_link(actions, existing) -> List[Dependency]:
 
 # ---- the reconstruct entry points ------------------------------------------
 
+def _is_msvc(act: Action, build_system: BuildSystem) -> bool:
+    """Is this action in the MSVC dialect? Decided per ACTION, not per build
+    system: a Bazel build is MSVC-dialect when its toolchain is cl.exe or
+    clang-cl, and an MSBuild C++ action always is (its argv may have come from
+    a tracking log, which stores switches without the tool)."""
+    if build_system == BuildSystem.MSBUILD:
+        return True
+    return msvc.is_msvc_compile(act.arguments) or msvc.is_msvc_link(act.arguments)
+
+
 def reconstruct_target(t: Target, build_system: BuildSystem,
-                       repo_root: str) -> TargetView:
+                       repo_root: str, path_map=()) -> TargetView:
     is_bazel = build_system == BuildSystem.BAZEL
-    view = TargetView(name=t.name, kind=t.kind, role=t.role)
+    view = TargetView(name=t.name, kind=t.kind, role=t.role,
+                      language=t.attrs.get("language", ""))
 
     for act in t.actions:
         if act.mnemonic in _COMPILE_MNEMONICS:
+            if _is_msvc(act, build_system):
+                src = msvc.cl_source(act.arguments)
+                if not src:
+                    continue
+                cdef, cinc, cfl = msvc.canonicalize_cl_flags(
+                    act.arguments, repo_root, cwd=act.cwd, path_map=path_map)
+                view.tus.append(TranslationUnit(
+                    source=msvc.norm_path(src, repo_root, act.cwd, path_map),
+                    defines=cdef, includes=cinc, flags=cfl))
+                continue
             if _is_header_processing(act.arguments):
                 continue
             src = _source_from_compile_args(act.arguments)
@@ -246,12 +317,23 @@ def reconstruct_target(t: Target, build_system: BuildSystem,
         elif act.mnemonic in _LINK_MNEMONICS:
             # CppArchive (static lib) has no meaningful link flags; only CppLink.
             if act.mnemonic == "CppLink":
-                view.link_flags = canonicalize_link_flags(
-                    list(act.arguments), is_bazel=is_bazel)
+                if _is_msvc(act, build_system):
+                    view.link_flags = msvc.canonicalize_link_flags(
+                        act.arguments, repo_root, cwd=act.cwd, path_map=path_map)
+                else:
+                    view.link_flags = canonicalize_link_flags(
+                        list(act.arguments), is_bazel=is_bazel)
         elif act.mnemonic in _JAVA_COMPILE_MNEMONICS:
             # Java compiles a whole source set per action -> one CompileGroup.
             view.compile_groups.append(
                 _java_compile_group(act.arguments, repo_root))
+        elif act.mnemonic in _CSHARP_COMPILE_MNEMONICS:
+            # So does C#: one csc invocation per assembly.
+            view.compile_groups.append(
+                _csharp_compile_group(act, repo_root, path_map))
+    if not view.language and view.compile_groups and not view.tus \
+            and all(g.language == "csharp" for g in view.compile_groups):
+        view.language = "c#"
 
     # deps: trust the frontend's resolved annotation (CMake); else infer from
     # link argv (Bazel).
@@ -264,5 +346,6 @@ def reconstruct_target(t: Target, build_system: BuildSystem,
 
 def reconstruct(model: CanonicalModel) -> dict:
     """Reconstruct every target into a TargetView, keyed by target name."""
-    return {name: reconstruct_target(t, model.build_system, model.repo_root)
+    return {name: reconstruct_target(t, model.build_system, model.repo_root,
+                                     model.path_map)
             for name, t in model.targets.items()}

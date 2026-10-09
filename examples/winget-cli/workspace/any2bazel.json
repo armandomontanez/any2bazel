@@ -1,0 +1,89 @@
+{
+  "bazel_args": [
+    "-c",
+    "opt"
+  ],
+  "align_shared_libs": true,
+  "exclude_targets": [
+    "AppInstallerCLI",
+    "AppInstallerCLICore",
+    "AppInstallerCLIE2ETests",
+    "AppInstallerCLIPackage",
+    "AppInstallerCLITests",
+    "AppInstallerCommonCore",
+    "AppInstallerRepositoryCore",
+    "AppInstallerTestExeInstaller",
+    "AppInstallerTestMsixInstaller",
+    "ComInprocTestbed",
+    "ConfigurationRemotingServer",
+    "IndexCreationTool",
+    "LocalhostWebServer",
+    "Microsoft.Management.Configuration",
+    "Microsoft.Management.Configuration.OutOfProc",
+    "Microsoft.Management.Configuration.Processor",
+    "Microsoft.Management.Configuration.Projection",
+    "Microsoft.Management.Configuration.UnitTests",
+    "Microsoft.Management.Deployment",
+    "Microsoft.Management.Deployment.CsWinRTProjection",
+    "Microsoft.Management.Deployment.InProc",
+    "Microsoft.Management.Deployment.OutOfProc",
+    "Microsoft.Management.Deployment.Projection",
+    "Microsoft.WinGet.Client.Cmdlets[net48]",
+    "Microsoft.WinGet.Client.Cmdlets[net8.0-windows10.0.26100.0]",
+    "Microsoft.WinGet.Client.Engine[net48]",
+    "Microsoft.WinGet.Client.Engine[net8.0-windows10.0.26100.0]",
+    "Microsoft.WinGet.Configuration.Cmdlets",
+    "Microsoft.WinGet.Configuration.Engine",
+    "Microsoft.WinGet.SharedLib",
+    "Microsoft.WinGet.UnitTests",
+    "WinGetMCPServer",
+    "WinGetServer",
+    "WinGetSourceCreator",
+    "WinGetTestCommon",
+    "WinGetUtil",
+    "WinGetUtilInterop",
+    "WinGetUtilInterop.UnitTests",
+    "WindowsPackageManager"
+  ],
+  "ignore": {
+    "include_map": [
+      {
+        "from": "external/+http_archive+nuget_wil",
+        "to": "@nuget/microsoft.windows.implementationlibrary"
+      },
+      {
+        "from": "bazel-out/x64_windows-opt/bin/external/+http_archive+nuget_wil",
+        "to": "@nuget/microsoft.windows.implementationlibrary"
+      },
+      {
+        "from": "external/+vcpkg_install+vcpkg/installed",
+        "to": "@vcpkg"
+      },
+      {
+        "from": "bazel-out/x64_windows-opt/bin/external/+vcpkg_install+vcpkg/installed",
+        "to": "@vcpkg"
+      },
+      {
+        "from": "src/AppInstallerSharedLib/x64/Release/Generated Files",
+        "to": "@winrt-projection"
+      },
+      {
+        "from": "bazel-out/x64_windows-opt/bin/winrt_platform",
+        "to": "@winrt-projection"
+      }
+    ],
+    "source_map": [
+      {
+        "from": "src/WinGetServer/WinGetServer_c.c",
+        "to": "@midl/WinGetServer_c.c"
+      },
+      {
+        "from": "bazel-out/x64_windows-opt/bin/src/WinGetServer/WinGetServer_c.c",
+        "to": "@midl/WinGetServer_c.c"
+      }
+    ]
+  },
+  "target_map": {
+    "UndockedRegFreeWinRT": "src/Xlang/UndockedRegFreeWinRT/src/UndockedRegFreeWinRT/UndockedRegFreeWinRT:winrtact.dll"
+  }
+}

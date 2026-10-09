@@ -1,0 +1,19 @@
+{
+  "bazel_args": ["-c", "opt"],
+  "align_shared_libs": true,
+  "include_tests": true,
+  "target_map": {
+    "Common.Utils.UnitTests": "src/common/UnitTests-CommonUtils:Common.Utils.UnitTests.dll"
+  },
+  "ignore": {
+    "include_map": [
+      {"from": "external/+http_archive+nuget_wil", "to": "@nuget/microsoft.windows.implementationlibrary"},
+      {"from": "bazel-out/x64_windows-opt/bin/external/+http_archive+nuget_wil", "to": "@nuget/microsoft.windows.implementationlibrary"},
+      {"from": "external/+vcpkg_install+vcpkg/installed", "to": "@vcpkg"},
+      {"from": "bazel-out/x64_windows-opt/bin/external/+vcpkg_install+vcpkg/installed", "to": "@vcpkg"},
+      {"from": "src/common/UnitTests-CommonUtils/x64/Release/Generated Files", "to": "@winrt-projection"},
+      {"from": "bazel-out/x64_windows-opt/bin/winrt_platform", "to": "@winrt-projection"}
+    ],
+    "include_prefixes": ["@vc/UnitTest/include"]
+  }
+}

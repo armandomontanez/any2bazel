@@ -1,0 +1,10 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# binver.vcxitems: a shared-items project. It has no output of its own; every
+# importing project gets its include directory and compiles its version.rc.
+# The headers are consumed as <binver/version.h> through `/Isrc/binver`.
+cc_library(
+    name = "binver",
+    hdrs = glob(["binver/*.h"]),
+    visibility = ["//visibility:public"],
+)

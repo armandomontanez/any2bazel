@@ -1,0 +1,44 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//bazel:midl.bzl", "midl")
+
+package(default_visibility = ["//visibility:public"])
+
+# WinGetServer.vcxproj's Midl item. MSBuild writes WinGetServer.h and the stubs
+# into this directory, and two other projects compile WinGetServer_c.c from here.
+midl(
+    name = "WinGetServer_idl",
+    src = "WinGetServer.idl",
+    client_stub = "WinGetServer_c.c",
+    header = "WinGetServer.h",
+    midl = "@windows_sdk//:bin/x64/midl.exe",
+    opts = [
+        "/W1",
+        "/char",
+        "signed",
+        "/env",
+        "x64",
+        "/app_config",
+        "/target",
+        "NT60",
+    ],
+    server_stub = "WinGetServer_s.c",
+)
+
+# The manual-activation client is not a library in the reference build: each
+# consumer compiles these sources itself, with its own flags.
+exports_files([
+    "Utils.cpp",
+    "WinGetServerManualActivation_Client.cpp",
+])
+
+cc_library(
+    name = "manual_activation_hdrs",
+    hdrs = [
+        "Utils.h",
+        "WinGetServer.h",
+        "WinGetServerManualActivation_Client.h",
+    ],
+    # The generated header is included as "WinGetServer.h" by sources of this
+    # directory, which only works when it is generated beside them.
+    includes = ["."],
+)

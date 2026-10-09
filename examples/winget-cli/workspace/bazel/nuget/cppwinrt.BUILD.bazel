@@ -1,0 +1,3 @@
+# C++/WinRT: the projection compiler. Its MSBuild targets run it over the SDK's
+# contract metadata; //bazel:cppwinrt.bzl does the same as a Bazel action.
+exports_files(["bin/cppwinrt.exe"])

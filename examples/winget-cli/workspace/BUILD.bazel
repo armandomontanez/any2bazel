@@ -1,0 +1,10 @@
+load("//bazel:cppwinrt.bzl", "cppwinrt_projection")
+
+# The C++/WinRT projection of the Windows SDK. MSBuild regenerates this into
+# every project's `<IntDir>Generated Files`; here it is built once.
+cppwinrt_projection(
+    name = "winrt_platform",
+    cppwinrt = "@nuget_cppwinrt//:bin/cppwinrt.exe",
+    visibility = ["//visibility:public"],
+    winmds = ["@windows_sdk//:contract_winmds"],
+)

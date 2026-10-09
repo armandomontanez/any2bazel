@@ -1,0 +1,58 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+# UndockedRegFreeWinRT.vcxproj: ConfigurationType DynamicLibrary, TargetName winrtact.
+cc_binary(
+    name = "winrtact.dll",
+    srcs = [
+        "catalog.cpp",
+        "catalog.h",
+        "dllmain.cpp",
+        "extwinrt.h",
+        "typeresolution.cpp",
+        "typeresolution.h",
+        # <ClCompile Include="..\..\..\..\..\WinGetServer\..."> in the project.
+        "//src/WinGetServer:Utils.cpp",
+        "//src/WinGetServer:WinGetServerManualActivation_Client.cpp",
+        "//src/WinGetServer:WinGetServer_c.c",
+    ],
+    copts = [
+        "/Qspectre",
+        "/W3",
+        "/guard:cf",
+        "/permissive-",
+        "/sdl",
+    ],
+    cxxopts = ["/std:c++17"],
+    linkopts = [
+        "/SUBSYSTEM:WINDOWS",
+        "/MANIFEST:EMBED",
+        "/MANIFESTUAC:NO",
+        "/guard:cf",
+        "comsuppw.lib",
+        "shlwapi.lib",
+        "xmllite.lib",
+        "runtimeobject.lib",
+        "Pathcch.lib",
+        "Rometadata.lib",
+        "Rpcrt4.lib",
+        "Shell32.lib",
+        "Advapi32.lib",
+    ],
+    linkshared = True,
+    local_defines = [
+        "UNDOCKEDREGFREEWINRT_EXPORTS",
+        "UNICODE",
+        "_UNICODE",
+        "_USRDLL",
+        "_WINDLL",
+        "_WINDOWS",
+    ],
+    visibility = ["//visibility:public"],
+    win_def_file = "winrtact.def",
+    deps = [
+        "//src/WinGetServer:manual_activation_hdrs",
+        "@msvc//:spectre_libs",
+        "@nuget_wil//:wil",
+        "@vcpkg//:detours",
+    ],
+)

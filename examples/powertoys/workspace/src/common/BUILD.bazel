@@ -1,0 +1,17 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# Headers under src/common that other projects include through
+# `/Isrc/common`, `/Isrc/common/utils`, `/Isrc` and friends. In MSBuild these
+# are not a project: an include directory is the whole interface.
+cc_library(
+    name = "headers",
+    hdrs = glob(["**/*.h"]),
+    visibility = ["//visibility:public"],
+    deps = ["//src/common/version:headers"],
+)
+
+# Compiled by each consumer with its own flags (<ClCompile Include="..\\interop\\...">).
+exports_files([
+    "interop/pipe_caller_auth.cpp",
+    "interop/two_way_pipe_message_ipc.cpp",
+])

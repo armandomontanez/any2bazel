@@ -1,0 +1,10 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# Windows Implementation Library: header-only. The package's MSBuild targets
+# file only adds this include directory (and debugger visualizers).
+cc_library(
+    name = "wil",
+    hdrs = glob(["include/**"]),
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)

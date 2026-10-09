@@ -1,0 +1,48 @@
+module(name = "powertoys")
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# NuGet packages: URL from the PackageBaseAddress of the feed in nuget.config,
+# version and integrity from msbuild.report.json -> externals.
+_NUGET = "https://pkgs.dev.azure.com/shine-oss/62769a65-d989-45e3-803c-9ad21fcf2ea2/_packaging/9ee2f86b-0ab1-4ff1-b4fe-a24b67be265f/nuget/v3/flat2"
+
+http_archive(
+    name = "nuget_wil",
+    build_file = "//bazel/nuget:wil.BUILD.bazel",
+    integrity = "sha512-kFZSUpWI7YXoV8aTJENnHH2KKssHI8adLqQtv/XfehlOodXY7x75fRJQS3iSaG64dN5jMVpP2yR9Slnmq9fHoA==",
+    type = "zip",
+    url = _NUGET + "/microsoft.windows.implementationlibrary/1.0.260126.7/microsoft.windows.implementationlibrary.1.0.260126.7.nupkg",
+)
+
+http_archive(
+    name = "nuget_cppwinrt",
+    build_file = "//bazel/nuget:cppwinrt.BUILD.bazel",
+    integrity = "sha512-rfnscFmliz4OsAV95SkAaS9YMFrui6cI0mXSc6gRJ5eL65vyWZsAhVthtyXU5usGIGtmiX6urvGuyDlI1gvCkw==",
+    type = "zip",
+    url = _NUGET + "/microsoft.windows.cppwinrt/2.0.250303.1/microsoft.windows.cppwinrt.2.0.250303.1.nupkg",
+)
+
+windows_sdk = use_repo_rule("//bazel:windows_sdk.bzl", "windows_sdk")
+
+windows_sdk(
+    name = "windows_sdk",
+    version = "10.0.26100.0",
+)
+
+msvc_toolset = use_repo_rule("//bazel:msvc_toolset.bzl", "msvc_toolset")
+
+# Version and VC directory come from BAZEL_VC / BAZEL_VC_FULL_VERSION (.bazelrc).
+msvc_toolset(name = "msvc")
+
+vcpkg_install = use_repo_rule("//bazel:vcpkg.bzl", "vcpkg_install")
+
+vcpkg_install(
+    name = "vcpkg",
+    manifest = "//:vcpkg.json",
+    # vcpkg-configuration.json names this directory as an overlay.
+    recipe_dirs = ["deps/vcpkg-overlays"],
+    triplet = "x64-windows-static",
+)

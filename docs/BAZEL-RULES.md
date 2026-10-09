@@ -172,6 +172,62 @@ recommendation. The transferable parts:
   an improvement, but it must be a stated decision, because it will move the
   parity diff for reasons that are not bugs.
 
+## `rules_cc` on Windows: the MSVC toolchain's fixed points
+
+Checked on Bazel 9.2.0 with `rules_cc` resolved to 0.2.17, against Visual
+Studio 2022 Build Tools (MSVC 14.44) and Visual Studio 2026 (MSVC 14.51) on one
+machine. These are properties of the auto-configured MSVC toolchain an MSBuild
+migration lands on; the MSBuild-specific guidance is in
+[REFERENCE-msbuild.md](REFERENCE-msbuild.md).
+
+* **It picks the newest installation unless told otherwise.** With both
+  installs present Bazel chose 14.51 while MSBuild from the Build Tools had
+  built the reference with 14.44. `--repo_env=BAZEL_VC=<...\VC>` plus
+  `BAZEL_VC_FULL_VERSION` and `BAZEL_WINSDK_FULL_VERSION` pin it; the compile
+  action's compiler path and `INCLUDE` environment then show the pinned
+  versions.
+* **Its default compile flags cannot be removed.**
+  `--features=-default_compile_flags` fails analysis ("unconditionally implies
+  feature"). Every compile carries `/DNOMINMAX /D_CRT_SECURE_NO_DEPRECATE
+  /D_CRT_SECURE_NO_WARNINGS /bigobj /Zm500 /EHsc /wd4351 /wd4291 /wd4250
+  /wd4996 /D_WIN32_WINNT=0x0601`, plus `/std:c++17` on C++ sources. Only the
+  last define is configurable: `BAZEL_WIN32_WINNT` replaces it and must hold
+  the entire flag (`/D_WIN32_WINNT=0x0A00`; a bare `0x0A00` is passed to the
+  compiler as is).
+* **They can be undone, though.** The variable accepts any flag, so
+  `--repo_env=BAZEL_WIN32_WINNT=/U_WIN32_WINNT` removes that define, and
+  `--copt=/UNOMINMAX --copt=/U_CRT_SECURE_NO_DEPRECATE
+  --copt=/U_CRT_SECURE_NO_WARNINGS` removes the others (a `/U` after the `/D`
+  wins; each compile prints a D9025 warning). This matters when the reference
+  build defines none of them: a source that defines `NOMINMAX` itself is a
+  C4005 redefinition, which `/WX` turns into an error.
+* **The static C runtime is a feature**, `features = ["static_link_msvcrt"]`
+  (`/MT`, and `libcmt.lib` as the default library). `copts = ["/MT"]` changes
+  the compile and leaves the link asking for `msvcrt.lib`.
+* **There is no resource compiler and no precompiled-header support.** A `.rc`
+  file needs its own rule (the `.res` is a link input); `/Yc` and `/Yu` have no
+  equivalent, so every source parses its `pch.h`.
+* **A test rule's executable can be a `.bat`.** A custom `test = True` rule that
+  writes a batch launcher runs under `bazel test`; files are found through
+  `RUNFILES_MANIFEST_FILE`, since Windows has no runfiles tree by default.
+* **The linker param file cannot be disabled either.**
+  `--features=-linker_param_file` fails the same way, while
+  `-compiler_param_file` is accepted. `aquery --include_param_files` reports
+  the file's content, which is what the Bazel extractor reads.
+* **A `cc_library` builds an archive and a DLL.** Under `//...` it emits
+  `CppArchive` (`name.lib`) and `CppLink` (`name_0.dll` plus `name.if.lib`).
+  It is still a library, not a DLL deliverable; the extractor keeps it
+  `static_library`. A real DLL is `cc_binary(linkshared = True)` (or
+  `cc_shared_library`).
+* **Link defaults**: `/SUBSYSTEM:CONSOLE /MACHINE:X64 /DEFAULTLIB:msvcrt.lib`,
+  `/OPT:ICF /OPT:REF` under `-c opt`, and a generated empty `/DEF:` for
+  libraries. A project's own `/SUBSYSTEM:` in `linkopts` comes later on the
+  line and wins.
+
+`rules_dotnet` has not been exercised here. The exploration that preceded the
+MSBuild frontend found versions before 0.17 fail on Bazel 9 and 0.22.2 work;
+that is a pointer, not a tested claim.
+
 ## `rules_foreign_cc`: not for the code under migration
 
 It runs the original build system (CMake, make, autotools) inside a Bazel action.

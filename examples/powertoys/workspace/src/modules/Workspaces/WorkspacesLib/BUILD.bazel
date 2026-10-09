@@ -1,0 +1,8 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# Only what src/common/UnitTests-CommonUtils includes by relative path.
+cc_library(
+    name = "ipc_helper_hdrs",
+    hdrs = ["IPCHelper.h"],
+    visibility = ["//visibility:public"],
+)

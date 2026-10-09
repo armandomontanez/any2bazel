@@ -13,6 +13,9 @@ model.*.json
 aquery.json
 diff.json
 actions.ndjson
+*.binlog
+*.events.ndjson
+msbuild.report.json
 
 # Don't track module lockfiles for examples.
 /examples/**/MODULE.bazel.lock

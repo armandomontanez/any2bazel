@@ -1,6 +1,6 @@
 ---
 name: any2bazel
-description: Migrate a project (CMake, Maven, or a VSCode-style npm/esbuild build) to Bazel by iterating until Bazel's build actions match the reference build. Use when asked to convert/port a CMake/Maven/npm project to Bazel, generate BUILD.bazel files, or verify Bazel build parity against a reference build. CMake→Bazel is the mature path; Maven and npm are newer. MVP scope — no codegen/custom commands.
+description: Migrate a project (CMake, MSBuild/Visual Studio, Maven, or a VSCode-style npm/esbuild build) to Bazel by iterating until Bazel's build actions match the reference build. Use when asked to convert/port a CMake/MSBuild/Maven/npm project to Bazel, generate BUILD.bazel files, or verify Bazel build parity against a reference build. CMake→Bazel is the mature path; MSBuild, Maven and npm are newer. MVP scope — no codegen/custom commands.
 user-invocable: true
 allowed-tools:
   - Read
@@ -117,7 +117,10 @@ Fields:
   the comparison is reproducible; read by the operator, not the diff.
 - **`target_map`** — `reference_name → bazel_name` for intentionally renamed
   **executables**. Bazel targets are keyed by full label, so the value is
-  usually `:name` (e.g. `"bssl": ":bssl"`). Libraries need no mapping.
+  usually `:name` (e.g. `"bssl": ":bssl"`). Libraries need no mapping. An entry
+  whose reference side is a **test** also gives the Bazel target the test role;
+  that is how a test that is not a test rule to `aquery` (a `cc_binary` DLL run
+  by an external runner) gets compared as one.
 - **`dep_map`** — `reference_dep_name → bazel_dep_name` for an **external link
   dep** spelled differently per build (e.g. `Catch2Main` vs `catch2_main`). An
   explicit, recorded rename — not a fuzzy match — so a residual `missing_dep` is
@@ -136,6 +139,16 @@ Fields:
 - **`ignore.{defines,flags,flags_prefixes}`** — reviewer-approved compile
   flag/define differences. `flags`/`defines` match exact tokens; `flags_prefixes`
   by prefix.
+- **`include_csharp`** (default `false`) — opt in to diffing C# targets
+  (source-set parity). Off by default for the same reason as tests: it needs
+  the Bazel side extracted with the `CSharpCompile` mnemonic. While off, C#
+  targets are listed under `excluded.csharp`.
+- **`align_shared_libs`** (default `false`) — name-align shared libraries the
+  way executables are (a missing one is `missing_target`; link flags are
+  diffed) instead of pooling them with static libraries. For builds where a
+  shared library is a deliverable in its own right, as a Windows DLL is.
+- **`ignore.toolchain`** — toolchain facts (`msvc_version`, `winsdk_version`,
+  `target_arch`) a reviewer accepts as differing between the two builds.
 - **`ignore.{link_flags,link_flags_prefixes}`** — reviewer-approved LINK flag
   differences (per-executable link-flag diff, same asymmetric-subset policy as
   compile flags). Common case: the reference repeats compile/codegen flags on
@@ -190,6 +203,7 @@ Match the marker files at the repo root against the *Detect via* column of
 | Frontend | Detect via | Reference source | Diffs | Status | Guide |
 |----------|------------|------------------|-------|--------|-------|
 | **CMake** | `CMakeLists.txt` | File API codemodel-v2 | C/C++ compile + link parity | **Mature** — the validated path | [REFERENCE-cmake.md](docs/REFERENCE-cmake.md) |
+| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs | C/C++ compile + link parity (MSVC dialect); C# source-set parity (opt-in) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md) |
 | **Maven** | `pom.xml` | forked `javac` argfiles | Java source-set parity | **Early** — argv-floor only | [REFERENCE-maven.md](docs/REFERENCE-maven.md) |
 | **VSCode / npm** | `package.json` driving gulp/esbuild/tsc | esbuild/tsc/`child_process` instrumentation | standalone TS emit check | **Experimental** — not wired into the main loop | [REFERENCE-npm.md](docs/REFERENCE-npm.md) |
 
@@ -267,7 +281,9 @@ bazel aquery 'mnemonic("CppCompile|ObjcCompile|CppLink|CppArchive", //...)' \
 python3 scripts/extract_bazel.py aquery.json <repo_root> model.bazel.json
 ```
 The mnemonics above cover C/C++. If the reference guide specifies a different
-mnemonic set, use that instead.
+mnemonic set or different aquery flags, use those instead. (On Windows with an
+MSVC toolchain, `--features=-linker_param_file` fails analysis; the MSBuild
+guide uses `--include_param_files` in its place.)
 
 If analysis fails, fix that first before trusting the diff. If a flag differs
 only because of a build-convention gap (e.g. `-std=gnu++17` vs `-std=c++17`,
@@ -300,6 +316,12 @@ also emits **WARN-only** kinds that don't block `converged` — `extra_tu` /
 `extra_target` (compiled/built on the Bazel side but not the reference) and
 `extra_test_tu` — note them but they need no action unless they point to
 something you didn't intend to add.
+
+A source the reference compiles in several targets with **different flags** is
+checked once per distinct flag set: each must be satisfied by some Bazel compile
+of that source. A reference source is also compared with the Bazel compile of
+it wherever Bazel put it, so moving a binary's sources into a library does not
+exempt their flags.
 
 #### Triage findings {#triage}
 

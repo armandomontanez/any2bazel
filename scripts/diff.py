@@ -38,7 +38,8 @@ from typing import Dict, List, Optional
 
 from canonicalize import BAZEL_TOLERATED_FLAG_PREFIXES
 from config import MigrationConfig
-from model import (CanonicalModel, TargetKind, TargetRole, TranslationUnit)
+from model import (BuildSystem, CanonicalModel, TargetKind, TargetRole,
+                   TranslationUnit)
 from reconstruct import TargetView, reconstruct
 
 
@@ -74,6 +75,13 @@ class Kind(str, Enum):
     # Java (CompileGroup) source-set comparison:
     MISSING_JAVA_SRC = "missing_java_src"  # .java compiled in A but not B
     EXTRA_JAVA_SRC = "extra_java_src"      # .java compiled in B but not A
+    # C# (CompileGroup) source-set comparison (only when cfg.include_csharp):
+    MISSING_CS_SRC = "missing_cs_src"      # .cs compiled in A but not B
+    EXTRA_CS_SRC = "extra_cs_src"          # .cs compiled in B but not A
+    # A source the reference compiles with more distinct flag sets than Bazel:
+    TU_VARIANT_COUNT = "tu_variant_count"
+    # The two builds resolved different toolchains (compiler / SDK / arch):
+    TOOLCHAIN_DIFF = "toolchain_diff"
     # test-specific (only emitted when cfg.include_tests):
     MISSING_TEST_TU = "missing_test_tu"     # test source compiled in cmake, not bazel
     EXTRA_TEST_TU = "extra_test_tu"         # test source compiled in bazel, not cmake
@@ -92,7 +100,8 @@ class Discrepancy:
 
 
 def _diff_tu(target: str, a: TranslationUnit, b: TranslationUnit,
-             cfg: "MigrationConfig") -> List[Discrepancy]:
+             cfg: "MigrationConfig", fold: bool = False) -> List[Discrepancy]:
+    """`fold` compares include paths case-insensitively (Windows builds)."""
     out: List[Discrepancy] = []
 
     # defines: order-insensitive set compare; both directions matter.
@@ -124,9 +133,11 @@ def _diff_tu(target: str, a: TranslationUnit, b: TranslationUnit,
     # verifier exists, enforcing order produced benign false positives (e.g.
     # boringssl: project `include` vs vendored gtest roots, disjoint headers,
     # reordered). See docs/FUTURE-include-order-collision-check.md.
-    a_inc = _norm_includes(a.includes, cfg)
-    b_inc = _norm_includes(b.includes, cfg)
-    missing = [i for i in a_inc if i not in set(b_inc)]
+    a_inc = _norm_includes(a.includes, cfg, fold)
+    b_inc = _norm_includes(b.includes, cfg, fold)
+    same = (lambda s: s.lower()) if fold else (lambda s: s)
+    a_keys, b_keys = {same(i) for i in a_inc}, {same(i) for i in b_inc}
+    missing = [i for i in a_inc if same(i) not in b_keys]
     if missing:
         out.append(Discrepancy(
             kind=Kind.INCLUDES_DIFF.value,
@@ -134,7 +145,7 @@ def _diff_tu(target: str, a: TranslationUnit, b: TranslationUnit,
             target=target, tu=a.source,
             detail="cmake include root missing on bazel side",
             cmake_only=missing,
-            bazel_only=[i for i in b_inc if i not in set(a_inc)],
+            bazel_only=[i for i in b_inc if same(i) not in a_keys],
         ))
 
     # other flags: asymmetric subset -- A must be subset of B.
@@ -173,14 +184,15 @@ def _diff_link_flags(name: str, ta: "TargetView", tb: "TargetView",
     return []
 
 
-def _norm_includes(includes, cfg) -> tuple:
+def _norm_includes(includes, cfg, fold: bool = False) -> tuple:
     """Apply include_map rewrites then drop ignored prefixes, collapsing the
     consecutive duplicates a rewrite can create (e.g. external/X and its
-    bazel-out twin both map to the same token). Order preserved."""
+    bazel-out twin both map to the same token). Order preserved. `fold`
+    matches the config's prefixes case-insensitively (Windows builds)."""
     out = []
     for inc in includes:
-        mapped = cfg.map_include(inc)
-        if cfg.include_ignored(mapped) or cfg.include_ignored(inc):
+        mapped = cfg.map_include(inc, fold)
+        if cfg.include_ignored(mapped, fold) or cfg.include_ignored(inc, fold):
             continue
         if not out or out[-1] != mapped:
             out.append(mapped)
@@ -194,9 +206,15 @@ def _norm_includes(includes, cfg) -> tuple:
 PARTICIPATING_ROLES = {TargetRole.PRODUCTION}
 
 
+def _out_of_scope_language(t: TargetView, cfg: "MigrationConfig") -> bool:
+    """C# targets take part only when opted in (cfg.include_csharp)."""
+    return t.language == "c#" and not cfg.include_csharp
+
+
 def _participating(views: Dict[str, TargetView], cfg: "MigrationConfig") -> set:
     return {n for n, t in views.items()
-            if t.role in PARTICIPATING_ROLES and not cfg.target_excluded(n)}
+            if t.role in PARTICIPATING_ROLES and not cfg.target_excluded(n)
+            and not _out_of_scope_language(t, cfg)}
 
 
 def _apply_target_map(views: Dict[str, TargetView],
@@ -238,6 +256,65 @@ def _union_tus(views: Dict[str, TargetView], names,
     return out
 
 
+def _tu_key(tu: TranslationUnit, cfg: "MigrationConfig", fold: bool) -> str:
+    """Comparison key of a TU: its (config-mapped) source path, case-folded for
+    Windows builds, where `Foo.cpp` and `foo.cpp` are one file."""
+    key = cfg.map_source(tu.key())
+    return key.lower() if fold else key
+
+
+def _variants(views: Dict[str, TargetView], names, cfg: "MigrationConfig",
+              fold: bool) -> Dict[str, List[TranslationUnit]]:
+    """Pool the TUs of the given targets by source, keeping every DISTINCT flag
+    set a source is compiled with. Most sources have one; a source shared by
+    several targets can legitimately have more (MSBuild shared-items projects,
+    a stub compiled into three DLLs with different warning levels), and
+    comparing only whichever was seen first would leave the rest unverified."""
+    out: Dict[str, List[TranslationUnit]] = {}
+    for n in sorted(names):
+        for tu in views[n].tus:
+            bucket = out.setdefault(_tu_key(tu, cfg, fold), [])
+            if not any(_same_flags(v, tu, fold) for v in bucket):
+                bucket.append(tu)
+    return out
+
+
+def _same_flags(x: TranslationUnit, y: TranslationUnit, fold: bool) -> bool:
+    if (x.defines, x.flags) != (y.defines, y.flags):
+        return False
+    if fold:
+        return [i.lower() for i in x.includes] == [i.lower() for i in y.includes]
+    return x.includes == y.includes
+
+
+def _diff_variants(target: str, a_list: List[TranslationUnit],
+                   b_list: List[TranslationUnit], cfg: "MigrationConfig",
+                   fold: bool) -> List[Discrepancy]:
+    """Compare every reference compile of a source against the Bazel compile of
+    it that matches best (fewest errors). With one variant on each side this is
+    exactly `_diff_tu`."""
+    out: List[Discrepancy] = []
+    seen = set()
+    for a_tu in a_list:
+        best = None
+        for b_tu in b_list:
+            found = _diff_tu(target, a_tu, b_tu, cfg, fold)
+            score = (sum(1 for d in found if d.severity == Severity.ERROR.value), len(found))
+            if best is None or score < best[0]:
+                best = (score, found)
+        for d in (best[1] if best else []):
+            fingerprint = (d.kind, d.tu, tuple(d.cmake_only or ()), tuple(d.bazel_only or ()))
+            if fingerprint not in seen:
+                seen.add(fingerprint)
+                out.append(d)
+    if len(a_list) > len(b_list):
+        out.append(Discrepancy(
+            Kind.TU_VARIANT_COUNT.value, Severity.WARN.value, target,
+            f"source compiled with {len(a_list)} distinct flag sets in the reference, "
+            f"{len(b_list)} in bazel", tu=a_list[0].source))
+    return out
+
+
 # Java source roots: a .java path is keyed by its PACKAGE-rooted form (the path
 # below the source root), which is invariant across build systems that disagree
 # on the repo prefix / source-root layout (Bazel 'guava/src/...' vs Maven
@@ -264,12 +341,39 @@ def _union_java_sources(views: Dict[str, TargetView], names) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for n in names:
         for g in views[n].compile_groups:
+            if g.language != "java":
+                continue
             for src in g.sources:
                 out.setdefault(_java_src_key(src), src)
     return out
 
 
-def _all_source_keys(views: Dict[str, TargetView], cfg: "MigrationConfig") -> set:
+def _is_generated_cs(path: str) -> bool:
+    """A C# source the build system wrote for itself (assembly info, global
+    usings, projections): under an intermediate directory, or outside the repo
+    altogether. Each build generates its own, so they are not compared."""
+    low = path.lower()
+    return (low.startswith(("bazel-out/", "obj/", "@", "/")) or "/obj/" in low
+            or (len(low) > 1 and low[1] == ":"))
+
+
+def _union_csharp_sources(views: Dict[str, TargetView], names) -> Dict[str, str]:
+    """Pool every hand-written C# source across the given targets: lower-cased
+    repo-relative path -> path as written. Same idea as Java -- the SOURCE SET
+    must match, however it is split into assemblies."""
+    out: Dict[str, str] = {}
+    for n in names:
+        for g in views[n].compile_groups:
+            if g.language != "csharp":
+                continue
+            for src in g.sources:
+                if not _is_generated_cs(src):
+                    out.setdefault(src.lower(), src)
+    return out
+
+
+def _all_source_keys(views: Dict[str, TargetView], cfg: "MigrationConfig",
+                     fold: bool = False) -> set:
     """Every source key compiled ANYWHERE in the participating scope, ignoring
     role. Used as the presence reference so a source that's a library TU on one
     side and a test/exe TU on the other isn't falsely reported missing.
@@ -283,10 +387,10 @@ def _all_source_keys(views: Dict[str, TargetView], cfg: "MigrationConfig") -> se
             continue
         in_scope = (t.role in PARTICIPATING_ROLES
                     or (cfg.include_tests and t.role == TargetRole.TEST))
-        if not in_scope:
+        if not in_scope or _out_of_scope_language(t, cfg):
             continue
         for tu in t.tus:
-            keys.add(cfg.map_source(tu.key()))
+            keys.add(_tu_key(tu, cfg, fold))
     return keys
 
 
@@ -299,14 +403,33 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
     # build-system-specific interpretation keyed on each model's tag.
     a_views = reconstruct(a)
     b_views = _apply_target_map(reconstruct(b), cfg.target_map)
+    # A test is not always a test RULE on the Bazel side: a CppUnitTest DLL is a
+    # `cc_binary` that a separate rule hands to vstest, and aquery cannot tell
+    # it from a product DLL. A reviewed target_map entry that pairs it with a
+    # reference test target says what it is, so it takes that role.
+    for name in cfg.target_map:
+        ta, tb = a_views.get(name), b_views.get(name)
+        if ta is not None and tb is not None and ta.role == TargetRole.TEST \
+                and tb.role == TargetRole.PRODUCTION:
+            tb.role = TargetRole.TEST
     a_names = _participating(a_views, cfg)
     b_names = _participating(b_views, cfg)
 
+    # Windows builds: the same file can be spelled with different case on the
+    # two sides (and tracking logs upper-case everything), so paths compare
+    # case-insensitively whenever either side is MSBuild.
+    fold = BuildSystem.MSBUILD in (a.build_system, b.build_system)
+
+    out.extend(_diff_toolchain(a, b, cfg))
+
     # Split production targets into libraries (compared as a TU-set union, so
     # grouping/naming is irrelevant) and executables (the real link
-    # deliverables, compared by identity).
-    a_libs = {n for n in a_names if a_views[n].kind in _LIBRARY_KINDS}
-    b_libs = {n for n in b_names if b_views[n].kind in _LIBRARY_KINDS}
+    # deliverables, compared by identity). Shared libraries are pooled unless
+    # cfg.align_shared_libs asks for them to be aligned like executables.
+    lib_kinds = _LIBRARY_KINDS - {TargetKind.SHARED} if cfg.align_shared_libs \
+        else _LIBRARY_KINDS
+    a_libs = {n for n in a_names if a_views[n].kind in lib_kinds}
+    b_libs = {n for n in b_names if b_views[n].kind in lib_kinds}
     a_exes = a_names - a_libs
     b_exes = b_names - b_libs
 
@@ -317,34 +440,54 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
     # Bazel compiling a test helper into a `testonly` cc_library while CMake
     # builds it straight into the test exe). Role grouping must not manufacture
     # a false missing/extra. Flag comparison still happens per-union below.
-    a_all = _all_source_keys(a_views, cfg)
-    b_all = _all_source_keys(b_views, cfg)
+    a_all = _all_source_keys(a_views, cfg, fold)
+    b_all = _all_source_keys(b_views, cfg, fold)
+
+    # Every Bazel compile in scope, by source. A reference TU is compared with
+    # the Bazel compile of the SAME source wherever Bazel put it: grouping a
+    # binary's sources into a library must not exempt their flags from the diff.
+    b_scope = set(b_names)
+    if cfg.include_tests:
+        b_scope |= {n for n, t in b_views.items()
+                    if t.role == TargetRole.TEST and not cfg.target_excluded(n)
+                    and not _out_of_scope_language(t, cfg)}
+    b_anywhere = _variants(b_views, b_scope, cfg, fold)
 
     # ---- libraries: project-wide TU-set comparison -------------------------
-    a_union = _union_tus(a_views, a_libs, cfg)
-    b_union = _union_tus(b_views, b_libs, cfg)
+    a_union = _variants(a_views, a_libs, cfg, fold)
+    b_union = _variants(b_views, b_libs, cfg, fold)
+    # What to print for a source: the comparison key, except that a case-folded
+    # key is shown as the path was actually written.
+    show = (lambda key, tu: tu.source) if fold else (lambda key, tu: key)
+
     for src in sorted(set(a_union) - b_all):
         out.append(Discrepancy(Kind.MISSING_TU.value, Severity.ERROR.value,
-                               "<libraries>", "source compiled in cmake but not bazel", tu=src))
+                               "<libraries>", "source compiled in cmake but not bazel",
+                               tu=show(src, a_union[src][0])))
     for src in sorted(set(b_union) - a_all):
         out.append(Discrepancy(Kind.EXTRA_TU.value, Severity.WARN.value,
-                               "<libraries>", "source compiled in bazel but not cmake", tu=src))
-    for src in sorted(set(a_union) & set(b_union)):
-        out.extend(_diff_tu("<libraries>", a_union[src], b_union[src], cfg))
+                               "<libraries>", "source compiled in bazel but not cmake",
+                               tu=show(src, b_union[src][0])))
+    for src in sorted(a_union):
+        candidates = b_union.get(src) or b_anywhere.get(src)
+        if candidates:
+            out.extend(_diff_variants("<libraries>", a_union[src], candidates, cfg, fold))
 
     # ---- executables: identity-aligned, own TUs + own flags ----------------
+    what = lambda views, n: ("shared library" if views[n].kind == TargetKind.SHARED
+                             else "executable")
     for name in sorted(a_exes - b_exes):
         out.append(Discrepancy(Kind.MISSING_TARGET.value, Severity.ERROR.value,
-                               name, "executable in cmake but not bazel"))
+                               name, what(a_views, name) + " in cmake but not bazel"))
     for name in sorted(b_exes - a_exes):
         out.append(Discrepancy(Kind.EXTRA_TARGET.value, Severity.WARN.value,
-                               name, "executable in bazel but not cmake"))
+                               name, what(b_views, name) + " in bazel but not cmake"))
     for name in sorted(a_exes & b_exes):
         ta, tb = a_views[name], b_views[name]
         # TU keys go through cfg.map_source (see _union_tus) so codegen grouping
         # asymmetries collapse to a shared token on both sides.
-        amap = {cfg.map_source(k): v for k, v in ta.tu_map().items()}
-        bmap = {cfg.map_source(k): v for k, v in tb.tu_map().items()}
+        amap = {_tu_key(tu, cfg, fold): tu for tu in ta.tus}
+        bmap = {_tu_key(tu, cfg, fold): tu for tu in tb.tus}
         # Presence is judged against the whole other side (a_all/b_all), not just
         # this exe's own TUs: a source this exe compiles may live in a library on
         # the other side (or vice versa) -- that's a grouping difference, not a
@@ -352,12 +495,17 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
         # real gap.
         for src in sorted(set(amap) - b_all):
             out.append(Discrepancy(Kind.MISSING_TU.value, Severity.ERROR.value,
-                                   name, "source compiled in cmake but not bazel", tu=src))
+                                   name, "source compiled in cmake but not bazel",
+                                   tu=show(src, amap[src])))
         for src in sorted(set(bmap) - a_all):
             out.append(Discrepancy(Kind.EXTRA_TU.value, Severity.WARN.value,
-                                   name, "source compiled in bazel but not cmake", tu=src))
-        for src in sorted(set(amap) & set(bmap)):
-            out.extend(_diff_tu(name, amap[src], bmap[src], cfg))
+                                   name, "source compiled in bazel but not cmake",
+                                   tu=show(src, bmap[src])))
+        for src in sorted(amap):
+            if src in bmap:
+                out.extend(_diff_tu(name, amap[src], bmap[src], cfg, fold))
+            elif src in b_anywhere:
+                out.extend(_diff_variants(name, [amap[src]], b_anywhere[src], cfg, fold))
         # link flags: asymmetric subset, same policy as compile flags -- every
         # CMake link flag must be present on the Bazel side; extra Bazel link
         # flags tolerated (toolchain link noise already stripped). Reviewer
@@ -383,6 +531,22 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
         out.append(Discrepancy(Kind.EXTRA_JAVA_SRC.value, Severity.WARN.value,
                                "<java>", "java source compiled in B but not A",
                                tu=b_java[key]))
+
+    # ---- C#: project-wide source-SET comparison (opt-in) -------------------
+    # Same shape as Java: csc compiles an assembly's whole source set at once,
+    # so the hand-written sources are pooled and the sets compared. Flags and
+    # references are not compared yet.
+    if cfg.include_csharp:
+        a_cs = _union_csharp_sources(a_views, a_names)
+        b_cs = _union_csharp_sources(b_views, b_names)
+        for key in sorted(set(a_cs) - set(b_cs)):
+            out.append(Discrepancy(Kind.MISSING_CS_SRC.value, Severity.ERROR.value,
+                                   "<csharp>", "C# source compiled in A but not B",
+                                   tu=a_cs[key]))
+        for key in sorted(set(b_cs) - set(a_cs)):
+            out.append(Discrepancy(Kind.EXTRA_CS_SRC.value, Severity.WARN.value,
+                                   "<csharp>", "C# source compiled in B but not A",
+                                   tu=b_cs[key]))
 
     # ---- link closure: EXTERNAL deps only ----------------------------------
     # Internal (in-project) dep names are meaningless once libraries are
@@ -410,12 +574,45 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
 
     # ---- tests (opt-in) ----------------------------------------------------
     if cfg.include_tests:
-        out.extend(_diff_tests(a_views, b_views, cfg, a_all, b_all))
+        out.extend(_diff_tests(a_views, b_views, cfg, a_all, b_all, fold))
+    return out
+
+
+# Toolchain facts compared across sides. Version skew between two compilers
+# makes a flag diff unreliable (different defaults, different diagnostics), so
+# it is reported before anything else and blocks convergence unless accepted.
+_TOOLCHAIN_KEYS = ("msvc_version", "winsdk_version", "target_arch")
+
+
+def _diff_toolchain(a: CanonicalModel, b: CanonicalModel,
+                    cfg: "MigrationConfig") -> List[Discrepancy]:
+    if not a.toolchain:
+        return []
+    wanted = [k for k in _TOOLCHAIN_KEYS
+              if a.toolchain.get(k) and k not in cfg.ignore_toolchain]
+    if not wanted:
+        return []
+    if not any(b.toolchain.get(k) for k in _TOOLCHAIN_KEYS):
+        return [Discrepancy(
+            Kind.TOOLCHAIN_DIFF.value, Severity.WARN.value, "<toolchain>",
+            "the bazel model records no toolchain (no MSVC compile action in the "
+            "aquery?), so it cannot be checked against the reference",
+            cmake_only=["%s=%s" % (k, a.toolchain[k]) for k in wanted])]
+    out: List[Discrepancy] = []
+    for k in wanted:
+        ours, theirs = a.toolchain[k], b.toolchain.get(k, "")
+        if ours.lower() != theirs.lower():
+            out.append(Discrepancy(
+                Kind.TOOLCHAIN_DIFF.value, Severity.ERROR.value, "<toolchain>",
+                "%s differs: reference %s, bazel %s" % (k, ours, theirs or "unknown"),
+                cmake_only=["%s=%s" % (k, ours)],
+                bazel_only=["%s=%s" % (k, theirs)] if theirs else []))
     return out
 
 
 def _diff_tests(a_views: Dict[str, TargetView], b_views: Dict[str, TargetView],
-                cfg: "MigrationConfig", a_all: set, b_all: set) -> List[Discrepancy]:
+                cfg: "MigrationConfig", a_all: set, b_all: set,
+                fold: bool = False) -> List[Discrepancy]:
     """Apply the COMPILE-PARITY stage to TEST targets. Two checks:
 
       1. TU-SET union of all test sources (like libraries): same test .cc files
@@ -439,21 +636,26 @@ def _diff_tests(a_views: Dict[str, TargetView], b_views: Dict[str, TargetView],
     """
     out: List[Discrepancy] = []
     a_tests = {n for n, t in a_views.items()
-               if t.role == TargetRole.TEST and not cfg.target_excluded(n)}
+               if t.role == TargetRole.TEST and not cfg.target_excluded(n)
+               and not _out_of_scope_language(t, cfg)}
     b_tests = {n for n, t in b_views.items()
-               if t.role == TargetRole.TEST and not cfg.target_excluded(n)}
+               if t.role == TargetRole.TEST and not cfg.target_excluded(n)
+               and not _out_of_scope_language(t, cfg)}
+    show = (lambda key, tu: tu.source) if fold else (lambda key, tu: key)
 
     # 1. test-source TU-set union
-    a_union = _union_tus(a_views, a_tests, cfg)
-    b_union = _union_tus(b_views, b_tests, cfg)
+    a_union = _variants(a_views, a_tests, cfg, fold)
+    b_union = _variants(b_views, b_tests, cfg, fold)
     for src in sorted(set(a_union) - b_all):
         out.append(Discrepancy(Kind.MISSING_TEST_TU.value, Severity.ERROR.value,
-                               "<tests>", "test source compiled in cmake but not bazel", tu=src))
+                               "<tests>", "test source compiled in cmake but not bazel",
+                               tu=show(src, a_union[src][0])))
     for src in sorted(set(b_union) - a_all):
         out.append(Discrepancy(Kind.EXTRA_TEST_TU.value, Severity.WARN.value,
-                               "<tests>", "test source compiled in bazel but not cmake", tu=src))
+                               "<tests>", "test source compiled in bazel but not cmake",
+                               tu=show(src, b_union[src][0])))
     for src in sorted(set(a_union) & set(b_union)):
-        out.extend(_diff_tu("<tests>", a_union[src], b_union[src], cfg))
+        out.extend(_diff_variants("<tests>", a_union[src], b_union[src], cfg, fold))
 
     # 2. test-binary existence by count
     if len(a_tests) != len(b_tests):
@@ -486,6 +688,8 @@ def excluded_summary(a: CanonicalModel, b: CanonicalModel,
         for name, t in sorted(reconstruct(model).items()):
             if cfg.target_excluded(name):
                 out.setdefault("config_excluded", []).append(name)
+            elif _out_of_scope_language(t, cfg):
+                out.setdefault("csharp", []).append(name)
             elif t.role not in participating:
                 out.setdefault(t.role.value, []).append(name)
         return out

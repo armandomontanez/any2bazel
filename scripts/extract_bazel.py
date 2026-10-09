@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import Dict, Iterable, List, Optional
 
@@ -57,6 +58,8 @@ _LINK = {"CppLink", "CppArchive"}
 _JAVAC = {"Javac"}
 # Custom TS rule mnemonic emitted by any2bazel/bazel/rules/ts_program.bzl.
 _TSPROGRAM = {"TsProgram"}
+# C# compile, as emitted by rules_dotnet. One action per assembly.
+_CSHARP = {"CSharpCompile"}
 
 # Infer target kind from the link ACTION, not just the output extension.
 # Mnemonic is authoritative for archives: CppArchive always produces a static
@@ -255,9 +258,76 @@ def _extract_ts_program(action: dict, out_dir: str,
     return actions
 
 
+_MSVC_CL = re.compile(
+    r"[\\/]VC[\\/]Tools[\\/]MSVC[\\/](?P<version>[0-9.]+)[\\/]bin[\\/]Host(?P<host>\w+)"
+    r"[\\/](?P<target>\w+)[\\/]cl\.exe$", re.IGNORECASE)
+_MSVC_INCLUDE = re.compile(r"[\\/]VC[\\/]Tools[\\/]MSVC[\\/]([0-9.]+)[\\/]include", re.IGNORECASE)
+_WINSDK_INCLUDE = re.compile(r"Windows Kits[\\/]10[\\/]include[\\/]([0-9.]+)[\\/]", re.IGNORECASE)
+
+
+def _msvc_toolchain(action: dict) -> Dict[str, str]:
+    """Toolchain facts of an MSVC-dialect compile action: the toolset version
+    and target architecture from the compiler path, the Windows SDK version
+    from the INCLUDE environment the toolchain sets (system include
+    directories are passed there, not on the command line). Empty for any
+    other compiler."""
+    args = action.get("arguments") or []
+    if not args:
+        return {}
+    tool = args[0]
+    base = tool.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base not in ("cl.exe", "cl", "clang-cl.exe", "clang-cl"):
+        return {}
+    env = {e.get("key", ""): e.get("value", "")
+           for e in action.get("environmentVariables", [])}
+    include = env.get("INCLUDE", "")
+    facts: Dict[str, str] = {"compiler": "clang-cl" if base.startswith("clang") else "msvc"}
+    m = _MSVC_CL.search(tool)
+    if m:
+        facts["msvc_version"] = m.group("version")
+        facts["target_arch"] = m.group("target").lower()
+    else:
+        m = _MSVC_INCLUDE.search(include)
+        if m:
+            facts["msvc_version"] = m.group(1)
+    m = _WINSDK_INCLUDE.search(include)
+    if m:
+        facts["winsdk_version"] = m.group(1)
+    return facts
+
+
+def _expand_param_files(action: dict) -> tuple:
+    """The action's argv with `@file` arguments replaced by the file's content,
+    when aquery was run with `--include_param_files` (it then reports each
+    param file's arguments under `paramFiles`). Without that flag, or for an
+    `@file` it does not know, the argument is left as is.
+
+    This is how link actions are read on toolchains where the param-file
+    feature cannot be switched off (rules_cc's MSVC toolchain rejects
+    `--features=-linker_param_file`)."""
+    params = {p.get("execPath", ""): p.get("arguments", [])
+              for p in action.get("paramFiles", [])}
+    if not params:
+        return tuple(action.get("arguments", []))
+    out: List[str] = []
+    for arg in action.get("arguments", []):
+        if arg.startswith("@") and arg[1:] in params:
+            out.extend(params[arg[1:]])
+        else:
+            out.append(arg)
+    return tuple(out)
+
+
 def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
-    with open(aquery_path) as f:
-        container = json.load(f)
+    # aquery output is UTF-8; PowerShell's `>` writes UTF-16 with a BOM, which
+    # is the usual way this file gets mangled on Windows.
+    with open(aquery_path, "rb") as f:
+        raw = f.read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        text = raw.decode("utf-8-sig")
+    container = json.loads(text)
 
     artifacts = _build_path_index(container)
     labels = _label_index(container)
@@ -269,7 +339,12 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
     def target_for(label_name: str, kind: TargetKind) -> Target:
         if label_name not in by_target:
             by_target[label_name] = Target(name=label_name, kind=kind)
-        elif kind != TargetKind.UNKNOWN:
+        elif kind != TargetKind.UNKNOWN and by_target[label_name].kind != TargetKind.STATIC:
+            # A cc_library can emit BOTH an archive and a dynamic library (on
+            # Windows it always does under `//...`). It is still a library a
+            # binary links, not a shared-library deliverable, so once an
+            # archive has been seen the target stays STATIC whatever order the
+            # actions arrive in.
             by_target[label_name].kind = kind
         return by_target[label_name]
 
@@ -277,11 +352,13 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
     for action in container.get("actions", []):
         mnem = action.get("mnemonic", "")
         name = _label_to_name(labels.get(action.get("targetId"), ""))
-        args = tuple(action.get("arguments", []))
+        args = _expand_param_files(action)
         outs = tuple(artifacts.get(o, "") for o in action.get("outputIds", []))
 
         if mnem in _COMPILE:
             t = target_for(name, TargetKind.UNKNOWN)
+            if not model.toolchain:
+                model.toolchain = _msvc_toolchain(action)
         elif mnem in _LINK:
             primary = outs[0] if outs else ""
             t = target_for(name, _kind_from_link(mnem, primary))
@@ -306,6 +383,18 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
             t = target_for(name, TargetKind.STATIC)
             t.actions.append(Action(mnemonic="JavaCompile", arguments=args,
                                     outputs=outs))
+            continue
+        elif mnem in _CSHARP:
+            # An assembly is an archive of compiled code -> STATIC, like a jar.
+            # rules_dotnet passes the sources in a param file, which aquery
+            # never materializes, so record them from the declared inputs.
+            t = target_for(name, TargetKind.STATIC)
+            sources = tuple(
+                p for p in (artifacts.get(i, "") for i in
+                            depsets.resolve(action.get("inputDepSetIds", [])))
+                if p.lower().endswith(".cs"))
+            t.actions.append(Action(mnemonic="CSharpCompile", arguments=args,
+                                    inputs=sources, outputs=outs))
             continue
         elif mnem in _TSPROGRAM:
             # tsc runs as ONE action in Bazel, so we derive per-file
@@ -340,7 +429,7 @@ def _classify_bazel(t: Target) -> TargetRole:
         return t.role
     has_compile = any(
         (a.mnemonic in _COMPILE and _is_real_compile(a.arguments))
-        or a.mnemonic == "JavaCompile"
+        or a.mnemonic in ("JavaCompile", "CSharpCompile")
         for a in t.actions)
     if not has_compile and t.kind != TargetKind.INTERFACE:
         return TargetRole.AGGREGATE

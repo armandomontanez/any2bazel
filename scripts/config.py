@@ -111,6 +111,21 @@ class MigrationConfig:
     # compared as their own project-wide TU-set union (like libraries), plus a
     # test-binary existence/count check. See PARTICIPATING_ROLES in diff.py.
     include_tests: bool = False
+    # Opt-in: also diff C# targets (source-set parity, like Java). OFF by
+    # default for the same reason as tests: it needs the Bazel side extracted
+    # with the CSharpCompile mnemonic, and a mixed C++/C# solution is usually
+    # migrated C++ first. While off, C# targets are listed under `excluded`.
+    include_csharp: bool = False
+    # Opt-in: name-align SHARED libraries the way executables are (a missing
+    # one is a missing_target; link flags are compared). By default shared
+    # libraries are pooled with static ones, which suits builds where they are
+    # an internal grouping; on Windows a DLL is usually a deliverable with its
+    # own .def, subsystem and delay-load flags, so MSBuild migrations turn
+    # this on.
+    align_shared_libs: bool = False
+    # Toolchain facts (keys of CanonicalModel.toolchain, e.g. "msvc_version")
+    # a reviewer accepts as differing between the two builds.
+    ignore_toolchain: Set[str] = field(default_factory=set)
 
     def flag_ignored(self, flag: str) -> bool:
         return (flag in self.ignore_flags
@@ -125,12 +140,15 @@ class MigrationConfig:
         return define in self.ignore_defines or \
             define.split("=", 1)[0] in self.ignore_defines
 
-    def map_include(self, include: str) -> str:
+    def map_include(self, include: str, fold: bool = False) -> str:
         """Apply include_map prefix rewrites (longest from-prefix wins). Returns
-        the include unchanged if no rule matches."""
+        the include unchanged if no rule matches. `fold` matches the prefix
+        case-insensitively (Windows builds, where a tracking log may have
+        upper-cased the path)."""
         best = None
+        probe = include.lower() if fold else include
         for frm, to in self.include_map:
-            if include.startswith(frm) and (best is None or len(frm) > len(best[0])):
+            if probe.startswith(frm.lower() if fold else frm)                     and (best is None or len(frm) > len(best[0])):
                 best = (frm, to)
         if best is None:
             return include
@@ -154,7 +172,10 @@ class MigrationConfig:
                 best = (frm, to)
         return best[1] if best else source
 
-    def include_ignored(self, include: str) -> bool:
+    def include_ignored(self, include: str, fold: bool = False) -> bool:
+        if fold:
+            low = include.lower()
+            return any(low.startswith(p.lower()) for p in self.ignore_include_prefixes)
         return any(include.startswith(p) for p in self.ignore_include_prefixes)
 
     def target_excluded(self, name: str) -> bool:
@@ -184,6 +205,9 @@ def load(path: str) -> MigrationConfig:
         exclude_targets=set(obj.get("exclude_targets", [])),
         bazel_args=tuple(obj.get("bazel_args", [])),
         include_tests=bool(obj.get("include_tests", False)),
+        include_csharp=bool(obj.get("include_csharp", False)),
+        align_shared_libs=bool(obj.get("align_shared_libs", False)),
+        ignore_toolchain=set(ig.get("toolchain", [])),
     )
 
 
