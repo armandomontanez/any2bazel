@@ -15,3 +15,15 @@ exports_files([
     "interop/pipe_caller_auth.cpp",
     "interop/two_way_pipe_message_ipc.cpp",
 ])
+
+# any2bazel:dotnet-exports begin (generated; do not edit between the markers)
+exports_files([
+    "Telemetry/TelemetryBase.cs",
+    "interop/CommonManaged.idl",
+    "interop/Constants.idl",
+    "interop/HotkeyManager.idl",
+    "interop/KeyboardHook.idl",
+    "interop/LayoutMapManaged.idl",
+    "interop/TwoWayPipeMessageIPCManaged.idl",
+])
+# any2bazel:dotnet-exports end

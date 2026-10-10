@@ -51,3 +51,23 @@ msvc_toolset = use_repo_rule("//bazel:msvc_toolset.bzl", "msvc_toolset")
 
 # Version and VC directory come from BAZEL_VC / BAZEL_VC_FULL_VERSION (.bazelrc).
 msvc_toolset(name = "msvc")
+
+# ---- C# (rules_dotnet) ----
+
+bazel_dep(name = "rules_dotnet", version = "0.22.2")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+
+dotnet = use_extension("@rules_dotnet//dotnet:extensions.bzl", "dotnet")
+
+# rules_dotnet's newest SDK; the reference build compiled with 10.0.401.
+dotnet.toolchain(dotnet_version = "10.0.400")
+use_repo(dotnet, "dotnet_toolchains")
+
+register_toolchains("@dotnet_toolchains//:all")
+
+nuget_assets = use_repo_rule("//bazel/dotnet:nuget_assets.bzl", "nuget_assets")
+
+nuget_assets(
+    name = "nuget",
+    lock = "//:nuget_lock.json",
+)

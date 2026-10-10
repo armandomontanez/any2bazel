@@ -1,0 +1,9 @@
+[
+  {
+    "match": "/Generated Files/CsWinRTPragma/",
+    "srcs": [":{target}_cswinrt_pragma"],
+    "load": {"//bazel/winget:cswinrt_pragma.bzl": ["cswinrt_pragma_sources"]},
+    "starlark": "# src/targets/EmbeddedCsWinRT.targets: prefixed copies of the projection and the\n# embedded CsWinRT runtime, compiled in place of the originals.\ncswinrt_pragma_sources(\n    name = \"{target}_cswinrt_pragma\",\n    srcs = [\":{target}_cswinrt\"],\n    package_files = [\"@{nuget}//microsoft.windows.cswinrt/2.3.1:files\"],\n)",
+    "bazel_output": "{target}_cswinrt_pragma.cs"
+  }
+]

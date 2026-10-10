@@ -139,10 +139,19 @@ Fields:
 - **`ignore.{defines,flags,flags_prefixes}`** — reviewer-approved compile
   flag/define differences. `flags`/`defines` match exact tokens; `flags_prefixes`
   by prefix.
-- **`include_csharp`** (default `false`) — opt in to diffing C# targets
-  (source-set parity). Off by default for the same reason as tests: it needs
-  the Bazel side extracted with the `CSharpCompile` mnemonic. While off, C#
-  targets are listed under `excluded.csharp`.
+- **`include_csharp`** (default `false`) — opt in to diffing C# targets.
+  Assemblies are paired by name and target framework and compared one by one:
+  sources, defines, options, references (`cs_refs_diff`), analyzers
+  (`cs_analyzers_diff`), resources and compile inputs (`cs_resources_diff`).
+  Off by default for the same reason as tests: it needs the Bazel side
+  extracted with the `CSharpCompile` mnemonic. While off, C# targets are listed
+  under `excluded.csharp`. See
+  [REFERENCE-msbuild-csharp.md](docs/REFERENCE-msbuild-csharp.md).
+- **`ignore.source_dir_map`** — like `source_map`, but prefix to prefix: the
+  rest of the path is kept. For a generated source tree whose files are listed
+  one by one on both sides. (`source_map` collapses a whole tree to one token,
+  which is what a directory output needs; run `check_generated.py` after a
+  build to compare what is inside.)
 - **`align_shared_libs`** (default `false`) — name-align shared libraries the
   way executables are (a missing one is `missing_target`; link flags are
   diffed) instead of pooling them with static libraries. For builds where a
@@ -203,7 +212,7 @@ Match the marker files at the repo root against the *Detect via* column of
 | Frontend | Detect via | Reference source | Diffs | Status | Guide |
 |----------|------------|------------------|-------|--------|-------|
 | **CMake** | `CMakeLists.txt` | File API codemodel-v2 | C/C++ compile + link parity | **Mature** — the validated path | [REFERENCE-cmake.md](docs/REFERENCE-cmake.md) |
-| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs | C/C++ compile + link parity (MSVC dialect); C# source-set parity (opt-in) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md) |
+| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs; a design-time pass for C# | C/C++ compile + link parity (MSVC dialect); C# per-assembly parity with `rules_dotnet` (opt-in) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md), [C#](docs/REFERENCE-msbuild-csharp.md) |
 | **Maven** | `pom.xml` | forked `javac` argfiles | Java source-set parity | **Early** — argv-floor only | [REFERENCE-maven.md](docs/REFERENCE-maven.md) |
 | **VSCode / npm** | `package.json` driving gulp/esbuild/tsc | esbuild/tsc/`child_process` instrumentation | standalone TS emit check | **Experimental** — not wired into the main loop | [REFERENCE-npm.md](docs/REFERENCE-npm.md) |
 

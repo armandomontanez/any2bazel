@@ -1,1 +1,12 @@
 exports_files(["vcpkg.json"])
+
+# any2bazel:dotnet-exports begin (generated; do not edit between the markers)
+exports_files([
+    "Microsoft.Management.Configuration/Microsoft.Management.Configuration.idl",
+    "Microsoft.Management.Deployment/PackageManager.idl",
+    "PowerShell/CommonFiles/PowerShellCmdlet.cs",
+    "PowerShell/CommonFiles/StreamType.cs",
+    "PowerShell/CommonFiles/WinGetAssemblyLoadContext.cs",
+    "stylecop.json",
+])
+# any2bazel:dotnet-exports end

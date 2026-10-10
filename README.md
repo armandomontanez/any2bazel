@@ -60,7 +60,7 @@ deterministic diff drives the loop — an LLM does only the creative work
 | Frontend | Reference source | Status |
 | :------- | :--------------- | :----- |
 | **CMake** | File API codemodel-v2 | **Mature** — the validated path |
-| **MSBuild** | binary log + tracking logs | **New** — C/C++ parity in the MSVC dialect; C# source sets; Windows only |
+| **MSBuild** | binary log + tracking logs | **New** — C/C++ parity in the MSVC dialect; C# per-assembly parity with `rules_dotnet`; Windows only |
 | **Maven** | forked `javac` argfiles | **Early** — argv-floor only |
 | **VSCode / npm** | esbuild/tsc/`child_process` instrumentation | **Experimental** — standalone TS emit check |
 
@@ -70,7 +70,7 @@ deterministic diff drives the loop — an LLM does only the creative work
 | :------ | :------- | :---- |
 | [Ladybird](docs/CASE-ladybird-migration.md) | CMake | Full case study — performance & flag canonicalization |
 | [VSCode](docs/CASE-vscode-migration.md) | npm/esbuild | 7710/7710 `.js` byte parity |
-| [winget-cli, PowerToys](docs/CASE-winget-cli-migration.md) | MSBuild | A slice: a static library, a DLL and a CppUnitTest DLL under `bazel test`, each with its external dependencies isolated |
+| [winget-cli, PowerToys](docs/CASE-winget-cli-migration.md) | MSBuild | Native: a static library, a DLL and a CppUnitTest DLL under `bazel test`. C#: every C# project of winget-cli and the non-XAML ones of PowerToys through `rules_dotnet`, with the WinRT interop chain |
 | BoringSSL, Abseil, RE2, fmt, spdlog, TinyXML2, zlib | CMake | See [EXPERIMENTS.md](EXPERIMENTS.md) |
 | Guava | Maven | See [EXPERIMENTS.md](EXPERIMENTS.md) |
 

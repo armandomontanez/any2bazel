@@ -7,7 +7,6 @@
   "exclude_targets": [
     "AppInstallerCLI",
     "AppInstallerCLICore",
-    "AppInstallerCLIE2ETests",
     "AppInstallerCLIPackage",
     "AppInstallerCLITests",
     "AppInstallerCommonCore",
@@ -15,35 +14,15 @@
     "AppInstallerTestExeInstaller",
     "AppInstallerTestMsixInstaller",
     "ComInprocTestbed",
-    "ConfigurationRemotingServer",
-    "IndexCreationTool",
-    "LocalhostWebServer",
     "Microsoft.Management.Configuration",
     "Microsoft.Management.Configuration.OutOfProc",
-    "Microsoft.Management.Configuration.Processor",
-    "Microsoft.Management.Configuration.Projection",
-    "Microsoft.Management.Configuration.UnitTests",
     "Microsoft.Management.Deployment",
-    "Microsoft.Management.Deployment.CsWinRTProjection",
     "Microsoft.Management.Deployment.InProc",
     "Microsoft.Management.Deployment.OutOfProc",
-    "Microsoft.Management.Deployment.Projection",
-    "Microsoft.WinGet.Client.Cmdlets[net48]",
-    "Microsoft.WinGet.Client.Cmdlets[net8.0-windows10.0.26100.0]",
-    "Microsoft.WinGet.Client.Engine[net48]",
-    "Microsoft.WinGet.Client.Engine[net8.0-windows10.0.26100.0]",
-    "Microsoft.WinGet.Configuration.Cmdlets",
-    "Microsoft.WinGet.Configuration.Engine",
-    "Microsoft.WinGet.SharedLib",
-    "Microsoft.WinGet.UnitTests",
-    "WinGetMCPServer",
     "WinGetServer",
-    "WinGetSourceCreator",
-    "WinGetTestCommon",
     "WinGetUtil",
-    "WinGetUtilInterop",
-    "WinGetUtilInterop.UnitTests",
-    "WindowsPackageManager"
+    "WindowsPackageManager",
+    "bazel/dotnet/resx:resx2resources"
   ],
   "ignore": {
     "include_map": [
@@ -80,10 +59,416 @@
       {
         "from": "bazel-out/x64_windows-opt/bin/src/WinGetServer/WinGetServer_c.c",
         "to": "@midl/WinGetServer_c.c"
+      },
+      {
+        "from": "src/AppInstallerCLIE2ETests/obj/x64/Release/net8.0-windows/Generated Files/CsWinRT/",
+        "to": "@cswinrt/AppInstallerCLIE2ETests"
+      },
+      {
+        "from": "bazel-bin/src/AppInstallerCLIE2ETests/cswinrt.cs",
+        "to": "@cswinrt/AppInstallerCLIE2ETests"
+      },
+      {
+        "from": "src/AppInstallerCLIE2ETests/obj/x64/Release/net8.0-windows/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/AppInstallerCLIE2ETests/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/AppInstallerCLIE2ETests/_msbuild/AppInstallerCLIE2ETests/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/AppInstallerCLIE2ETests/target_framework_attribute"
+      },
+      {
+        "from": "src/ConfigurationRemotingServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/ConfigurationRemotingServer.AssemblyInfo.cs",
+        "to": "@msbuild/ConfigurationRemotingServer/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/ConfigurationRemotingServer/_msbuild/ConfigurationRemotingServer/ConfigurationRemotingServer.AssemblyInfo.cs",
+        "to": "@msbuild/ConfigurationRemotingServer/assembly_info"
+      },
+      {
+        "from": "src/ConfigurationRemotingServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/ConfigurationRemotingServer.GlobalUsings.g.cs",
+        "to": "@msbuild/ConfigurationRemotingServer/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/ConfigurationRemotingServer/_msbuild/ConfigurationRemotingServer/ConfigurationRemotingServer.GlobalUsings.g.cs",
+        "to": "@msbuild/ConfigurationRemotingServer/global_usings"
+      },
+      {
+        "from": "src/ConfigurationRemotingServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/ConfigurationRemotingServer/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/ConfigurationRemotingServer/_msbuild/ConfigurationRemotingServer/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/ConfigurationRemotingServer/target_framework_attribute"
+      },
+      {
+        "from": "src/IndexCreationTool/obj/x64/Release/net8.0/IndexCreationTool.AssemblyInfo.cs",
+        "to": "@msbuild/IndexCreationTool/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/IndexCreationTool/_msbuild/IndexCreationTool/IndexCreationTool.AssemblyInfo.cs",
+        "to": "@msbuild/IndexCreationTool/assembly_info"
+      },
+      {
+        "from": "src/IndexCreationTool/obj/x64/Release/net8.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/IndexCreationTool/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/IndexCreationTool/_msbuild/IndexCreationTool/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/IndexCreationTool/target_framework_attribute"
+      },
+      {
+        "from": "src/LocalhostWebServer/obj/x64/Release/net8.0/LocalhostWebServer.AssemblyInfo.cs",
+        "to": "@msbuild/LocalhostWebServer/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/LocalhostWebServer/_msbuild/LocalhostWebServer/LocalhostWebServer.AssemblyInfo.cs",
+        "to": "@msbuild/LocalhostWebServer/assembly_info"
+      },
+      {
+        "from": "src/LocalhostWebServer/obj/x64/Release/net8.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/LocalhostWebServer/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/LocalhostWebServer/_msbuild/LocalhostWebServer/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/LocalhostWebServer/target_framework_attribute"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.Processor/obj/Release/net8.0-windows10.0.26100.0/win/Generated Files/CsWinRTPragma/",
+        "to": "@generated/Microsoft.Management.Configuration.Processor/0"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.Processor/Microsoft.Management.Configuration.Processor_cswinrt_pragma.cs",
+        "to": "@generated/Microsoft.Management.Configuration.Processor/0"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.Processor/obj/Release/net8.0-windows10.0.26100.0/win/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Processor/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.Processor/_msbuild/Microsoft.Management.Configuration.Processor/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Processor/target_framework_attribute"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.Projection/obj/Release/net8.0-windows10.0.26100.0/Microsoft.Management.Configuration.Projection.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Projection/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.Projection/_msbuild/Microsoft.Management.Configuration.Projection/Microsoft.Management.Configuration.Projection.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Projection/assembly_info"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.Projection/obj/Release/net8.0-windows10.0.26100.0/Generated Files/CsWinRT/",
+        "to": "@cswinrt/Microsoft.Management.Configuration.Projection"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.Projection/cswinrt.cs",
+        "to": "@cswinrt/Microsoft.Management.Configuration.Projection"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.Projection/obj/Release/net8.0-windows10.0.26100.0/Microsoft.Management.Configuration.Projection.GlobalUsings.g.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Projection/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.Projection/_msbuild/Microsoft.Management.Configuration.Projection/Microsoft.Management.Configuration.Projection.GlobalUsings.g.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Projection/global_usings"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.Projection/obj/Release/net8.0-windows10.0.26100.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Projection/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.Projection/_msbuild/Microsoft.Management.Configuration.Projection/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.Projection/target_framework_attribute"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.UnitTests/obj/x64/Release/net8.0-windows10.0.26100.0/Microsoft.Management.Configuration.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.UnitTests/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.UnitTests/_msbuild/Microsoft.Management.Configuration.UnitTests/Microsoft.Management.Configuration.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.UnitTests/assembly_info"
+      },
+      {
+        "from": "src/Microsoft.Management.Configuration.UnitTests/obj/x64/Release/net8.0-windows10.0.26100.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Configuration.UnitTests/_msbuild/Microsoft.Management.Configuration.UnitTests/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Configuration.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.CsWinRTProjection/obj/Release/net8.0-windows10.0.26100.0/Microsoft.Management.Deployment.CsWinRTProjection.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.CsWinRTProjection/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.CsWinRTProjection/_msbuild/Microsoft.Management.Deployment.CsWinRTProjection/Microsoft.Management.Deployment.CsWinRTProjection.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.CsWinRTProjection/assembly_info"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.CsWinRTProjection/obj/Release/net8.0-windows10.0.26100.0/Generated Files/CsWinRT/",
+        "to": "@cswinrt/Microsoft.Management.Deployment.CsWinRTProjection"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.CsWinRTProjection/cswinrt.cs",
+        "to": "@cswinrt/Microsoft.Management.Deployment.CsWinRTProjection"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.CsWinRTProjection/obj/Release/net8.0-windows10.0.26100.0/Microsoft.Management.Deployment.CsWinRTProjection.GlobalUsings.g.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.CsWinRTProjection/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.CsWinRTProjection/_msbuild/Microsoft.Management.Deployment.CsWinRTProjection/Microsoft.Management.Deployment.CsWinRTProjection.GlobalUsings.g.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.CsWinRTProjection/global_usings"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.CsWinRTProjection/obj/Release/net8.0-windows10.0.26100.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.CsWinRTProjection/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.CsWinRTProjection/_msbuild/Microsoft.Management.Deployment.CsWinRTProjection/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.CsWinRTProjection/target_framework_attribute"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.Projection/obj/x64/Release/net8.0-windows/Microsoft.Management.Deployment.Projection.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.Projection/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.Projection/_msbuild/Microsoft.Management.Deployment.Projection/Microsoft.Management.Deployment.Projection.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.Projection/assembly_info"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.Projection/obj/x64/Release/net8.0-windows/Generated Files/CsWinRT/",
+        "to": "@cswinrt/Microsoft.Management.Deployment.Projection"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.Projection/cswinrt.cs",
+        "to": "@cswinrt/Microsoft.Management.Deployment.Projection"
+      },
+      {
+        "from": "src/Microsoft.Management.Deployment.Projection/obj/x64/Release/net8.0-windows/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.Projection/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/Microsoft.Management.Deployment.Projection/_msbuild/Microsoft.Management.Deployment.Projection/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.Management.Deployment.Projection/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Client.Cmdlets/obj/Release/net48/.NETFramework,Version=v4.8.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Cmdlets_net48/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Client.Cmdlets/_msbuild/Microsoft.WinGet.Client.Cmdlets_net48/.NETFramework_Version_v4.8.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Cmdlets_net48/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Client.Cmdlets/obj/Release/net8.0-windows10.0.26100.0/win/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Cmdlets_net8.0-windows10.0.26100.0/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Client.Cmdlets/_msbuild/Microsoft.WinGet.Client.Cmdlets_net8.0-windows10.0.26100.0/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Cmdlets_net8.0-windows10.0.26100.0/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Client.Engine/obj/Release/net48/.NETFramework,Version=v4.8.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Engine_net48/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Client.Engine/_msbuild/Microsoft.WinGet.Client.Engine_net48/.NETFramework_Version_v4.8.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Engine_net48/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Client.Engine/obj/Release/net8.0-windows10.0.26100.0/win/Generated Files/CsWinRTPragma/",
+        "to": "@generated/Microsoft.WinGet.Client.Engine_net8.0-windows10.0.26100.0/0"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Client.Engine/Microsoft.WinGet.Client.Engine_net8.0-windows10.0.26100.0_cswinrt_pragma.cs",
+        "to": "@generated/Microsoft.WinGet.Client.Engine_net8.0-windows10.0.26100.0/0"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Client.Engine/obj/Release/net8.0-windows10.0.26100.0/win/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Engine_net8.0-windows10.0.26100.0/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Client.Engine/_msbuild/Microsoft.WinGet.Client.Engine_net8.0-windows10.0.26100.0/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Client.Engine_net8.0-windows10.0.26100.0/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Configuration.Cmdlets/obj/Release/net8.0-windows10.0.26100/win/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Configuration.Cmdlets/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Configuration.Cmdlets/_msbuild/Microsoft.WinGet.Configuration.Cmdlets/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Configuration.Cmdlets/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.Configuration.Engine/obj/Release/net8.0-windows10.0.26100/win/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Configuration.Engine/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.Configuration.Engine/_msbuild/Microsoft.WinGet.Configuration.Engine/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.Configuration.Engine/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.SharedLib/obj/Release/netstandard2.0/Microsoft.WinGet.SharedLib.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.WinGet.SharedLib/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.SharedLib/_msbuild/Microsoft.WinGet.SharedLib/Microsoft.WinGet.SharedLib.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.WinGet.SharedLib/assembly_info"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.SharedLib/obj/Release/netstandard2.0/.NETStandard,Version=v2.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.SharedLib/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.SharedLib/_msbuild/Microsoft.WinGet.SharedLib/.NETStandard_Version_v2.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.SharedLib/target_framework_attribute"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.UnitTests/obj/Release/net8.0-windows10.0.26100.0/Microsoft.WinGet.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.WinGet.UnitTests/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.UnitTests/_msbuild/Microsoft.WinGet.UnitTests/Microsoft.WinGet.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/Microsoft.WinGet.UnitTests/assembly_info"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.UnitTests/obj/Release/net8.0-windows10.0.26100.0/Generated Files/CsWinRT/",
+        "to": "@cswinrt/Microsoft.WinGet.UnitTests"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.UnitTests/cswinrt.cs",
+        "to": "@cswinrt/Microsoft.WinGet.UnitTests"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.UnitTests/obj/Release/net8.0-windows10.0.26100.0/Microsoft.WinGet.UnitTests.GlobalUsings.g.cs",
+        "to": "@msbuild/Microsoft.WinGet.UnitTests/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.UnitTests/_msbuild/Microsoft.WinGet.UnitTests/Microsoft.WinGet.UnitTests.GlobalUsings.g.cs",
+        "to": "@msbuild/Microsoft.WinGet.UnitTests/global_usings"
+      },
+      {
+        "from": "src/PowerShell/Microsoft.WinGet.UnitTests/obj/Release/net8.0-windows10.0.26100.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/PowerShell/Microsoft.WinGet.UnitTests/_msbuild/Microsoft.WinGet.UnitTests/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Microsoft.WinGet.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "src/WinGetMCPServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/WinGetMCPServer.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetMCPServer/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/WinGetMCPServer/_msbuild/WinGetMCPServer/WinGetMCPServer.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetMCPServer/assembly_info"
+      },
+      {
+        "from": "src/WinGetMCPServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/Generated Files/CsWinRTPragma/",
+        "to": "@generated/WinGetMCPServer/0"
+      },
+      {
+        "from": "bazel-bin/src/WinGetMCPServer/WinGetMCPServer_cswinrt_pragma.cs",
+        "to": "@generated/WinGetMCPServer/0"
+      },
+      {
+        "from": "src/WinGetMCPServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/WinGetMCPServer.GlobalUsings.g.cs",
+        "to": "@msbuild/WinGetMCPServer/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/WinGetMCPServer/_msbuild/WinGetMCPServer/WinGetMCPServer.GlobalUsings.g.cs",
+        "to": "@msbuild/WinGetMCPServer/global_usings"
+      },
+      {
+        "from": "src/WinGetMCPServer/obj/x64/Release/net8.0-windows10.0.26100.0/win-x64/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetMCPServer/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/WinGetMCPServer/_msbuild/WinGetMCPServer/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetMCPServer/target_framework_attribute"
+      },
+      {
+        "from": "src/WinGetSourceCreator/obj/Release/net8.0/WinGetSourceCreator.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetSourceCreator/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/WinGetSourceCreator/_msbuild/WinGetSourceCreator/WinGetSourceCreator.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetSourceCreator/assembly_info"
+      },
+      {
+        "from": "src/WinGetSourceCreator/obj/Release/net8.0/WinGetSourceCreator.GlobalUsings.g.cs",
+        "to": "@msbuild/WinGetSourceCreator/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/WinGetSourceCreator/_msbuild/WinGetSourceCreator/WinGetSourceCreator.GlobalUsings.g.cs",
+        "to": "@msbuild/WinGetSourceCreator/global_usings"
+      },
+      {
+        "from": "src/WinGetSourceCreator/obj/Release/net8.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetSourceCreator/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/WinGetSourceCreator/_msbuild/WinGetSourceCreator/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetSourceCreator/target_framework_attribute"
+      },
+      {
+        "from": "src/WinGetTestCommon/obj/x64/Release/net8.0-windows/WinGetTestCommon.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetTestCommon/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/WinGetTestCommon/_msbuild/WinGetTestCommon/WinGetTestCommon.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetTestCommon/assembly_info"
+      },
+      {
+        "from": "src/WinGetTestCommon/obj/x64/Release/net8.0-windows/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetTestCommon/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/WinGetTestCommon/_msbuild/WinGetTestCommon/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetTestCommon/target_framework_attribute"
+      },
+      {
+        "from": "src/WinGetUtilInterop/obj/Release/netstandard2.1/WinGetUtilInterop.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetUtilInterop/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/WinGetUtilInterop/_msbuild/WinGetUtilInterop/WinGetUtilInterop.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetUtilInterop/assembly_info"
+      },
+      {
+        "from": "src/WinGetUtilInterop/obj/Release/netstandard2.1/.NETStandard,Version=v2.1.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetUtilInterop/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/WinGetUtilInterop/_msbuild/WinGetUtilInterop/.NETStandard_Version_v2.1.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetUtilInterop/target_framework_attribute"
+      },
+      {
+        "from": "src/WinGetUtilInterop.UnitTests/obj/x64/Release/net8.0/WinGetUtilInterop.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetUtilInterop.UnitTests/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/WinGetUtilInterop.UnitTests/_msbuild/WinGetUtilInterop.UnitTests/WinGetUtilInterop.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/WinGetUtilInterop.UnitTests/assembly_info"
+      },
+      {
+        "from": "src/WinGetUtilInterop.UnitTests/obj/x64/Release/net8.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetUtilInterop.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/WinGetUtilInterop.UnitTests/_msbuild/WinGetUtilInterop.UnitTests/.NETCoreApp_Version_v8.0.AssemblyAttributes.cs",
+        "to": "@msbuild/WinGetUtilInterop.UnitTests/target_framework_attribute"
       }
+    ],
+    "toolchain": [
+      "dotnet_sdk_version",
+      "pack:microsoft.netcore.app.ref"
     ]
   },
   "target_map": {
     "UndockedRegFreeWinRT": "src/Xlang/UndockedRegFreeWinRT/src/UndockedRegFreeWinRT/UndockedRegFreeWinRT:winrtact.dll"
-  }
+  },
+  "include_csharp": true,
+  "include_tests": true
 }

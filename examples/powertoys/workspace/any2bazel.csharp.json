@@ -1,0 +1,376 @@
+{
+  "bazel_args": [
+    "-c",
+    "opt"
+  ],
+  "include_tests": true,
+  "exclude_targets": [
+    "AdvancedPaste.FuzzTests",
+    "AdvancedPaste.UITests.Next",
+    "AlwaysOnTop.UITests",
+    "Awake",
+    "Awake.ModuleServices",
+    "Awake.ModuleServices.UnitTests",
+    "Awake.UnitTests",
+    "BgcodePreviewHandler",
+    "BgcodeThumbnailProvider",
+    "CalculatorEngineCommon",
+    "ColorPicker.ModuleServices",
+    "ColorPicker.UITests",
+    "Common.Interop.UnitTests",
+    "Common.Search",
+    "Community.PowerToys.Run.Plugin.UnitConverter",
+    "Community.PowerToys.Run.Plugin.UnitConverter.UnitTest",
+    "Community.PowerToys.Run.Plugin.VSCodeWorkspaces",
+    "Community.PowerToys.Run.Plugin.ValueGenerator",
+    "Community.PowerToys.Run.Plugin.ValueGenerator.UnitTests",
+    "Community.PowerToys.Run.Plugin.WebSearch",
+    "CropAndLock.TestApp",
+    "CropAndLock.UITests",
+    "EnvironmentVariables.UITests",
+    "FancyZones.FuzzTests",
+    "FancyZones.UITests.Next",
+    "FancyZonesCLI",
+    "FancyZonesEditor.UITests.Next",
+    "FancyZonesEditorCommon",
+    "FileLocksmith.UITests",
+    "FilePreviewCommon",
+    "GPOWrapper",
+    "GPOWrapperProjection",
+    "GcodePreviewHandler",
+    "GcodeThumbnailProvider",
+    "Hosts.UITests.Next",
+    "HostsEditor.FuzzTests",
+    "HostsEditor.UITests",
+    "ImageResizer.UITests",
+    "KeyboardManager.UITests",
+    "LanguageModelProvider",
+    "LightSwitch.UITests",
+    "LightSwitch.UITests.Next",
+    "LightSwitchLib",
+    "LightSwitchModuleInterface",
+    "ManagedCsWin32",
+    "MarkdownPreviewHandler",
+    "Microsoft.CmdPal.AdaptiveCards.IncrementalRendering",
+    "Microsoft.CmdPal.AdaptiveCards.IncrementalRendering.UnitTests",
+    "Microsoft.CmdPal.Common",
+    "Microsoft.CmdPal.Common.UnitTests",
+    "Microsoft.CmdPal.Ext.Actions",
+    "Microsoft.CmdPal.Ext.Apps",
+    "Microsoft.CmdPal.Ext.Apps.UnitTests",
+    "Microsoft.CmdPal.Ext.Bookmarks",
+    "Microsoft.CmdPal.Ext.Bookmarks.UnitTests",
+    "Microsoft.CmdPal.Ext.Calc",
+    "Microsoft.CmdPal.Ext.Calc.UnitTests",
+    "Microsoft.CmdPal.Ext.ClipboardHistory",
+    "Microsoft.CmdPal.Ext.ClipboardHistory.UnitTests",
+    "Microsoft.CmdPal.Ext.Indexer",
+    "Microsoft.CmdPal.Ext.Indexer.UnitTests",
+    "Microsoft.CmdPal.Ext.PerformanceMonitor",
+    "Microsoft.CmdPal.Ext.PerformanceMonitor.UnitTests",
+    "Microsoft.CmdPal.Ext.PowerToys",
+    "Microsoft.CmdPal.Ext.PowerToys.UnitTests",
+    "Microsoft.CmdPal.Ext.Registry",
+    "Microsoft.CmdPal.Ext.Registry.UnitTests",
+    "Microsoft.CmdPal.Ext.RemoteDesktop",
+    "Microsoft.CmdPal.Ext.RemoteDesktop.UnitTests",
+    "Microsoft.CmdPal.Ext.Shell",
+    "Microsoft.CmdPal.Ext.Shell.UnitTests",
+    "Microsoft.CmdPal.Ext.System",
+    "Microsoft.CmdPal.Ext.System.UnitTests",
+    "Microsoft.CmdPal.Ext.TimeDate",
+    "Microsoft.CmdPal.Ext.TimeDate.UnitTests",
+    "Microsoft.CmdPal.Ext.UnitTestBase",
+    "Microsoft.CmdPal.Ext.WebSearch",
+    "Microsoft.CmdPal.Ext.WebSearch.UnitTests",
+    "Microsoft.CmdPal.Ext.WinGet",
+    "Microsoft.CmdPal.Ext.WinGet.UnitTests",
+    "Microsoft.CmdPal.Ext.WindowWalker",
+    "Microsoft.CmdPal.Ext.WindowWalker.UnitTests",
+    "Microsoft.CmdPal.Ext.WindowsServices",
+    "Microsoft.CmdPal.Ext.WindowsSettings",
+    "Microsoft.CmdPal.Ext.WindowsSettings.UnitTests",
+    "Microsoft.CmdPal.Ext.WindowsTerminal",
+    "Microsoft.CmdPal.UI.UnitTests",
+    "Microsoft.CmdPal.UI.ViewModels",
+    "Microsoft.CmdPal.UI.ViewModels.UnitTests",
+    "Microsoft.CmdPal.UITests",
+    "Microsoft.CommandPalette.Extensions",
+    "Microsoft.CommandPalette.Extensions.Toolkit",
+    "Microsoft.CommandPalette.Extensions.Toolkit.UnitTests",
+    "Microsoft.Plugin.Folder",
+    "Microsoft.Plugin.Folder.UnitTests",
+    "Microsoft.Plugin.Indexer",
+    "Microsoft.Plugin.Program",
+    "Microsoft.Plugin.Program.UnitTests",
+    "Microsoft.Plugin.Shell",
+    "Microsoft.Plugin.Uri",
+    "Microsoft.Plugin.Uri.UnitTests",
+    "Microsoft.Plugin.WindowWalker",
+    "Microsoft.Plugin.WindowWalker.UnitTests",
+    "Microsoft.Plugin.WindowsTerminal.UnitTests",
+    "Microsoft.PowerToys.Run.Plugin.Calculator",
+    "Microsoft.PowerToys.Run.Plugin.Calculator.UnitTest",
+    "Microsoft.PowerToys.Run.Plugin.OneNote",
+    "Microsoft.PowerToys.Run.Plugin.PowerToys",
+    "Microsoft.PowerToys.Run.Plugin.Registry",
+    "Microsoft.PowerToys.Run.Plugin.Registry.UnitTests",
+    "Microsoft.PowerToys.Run.Plugin.Service",
+    "Microsoft.PowerToys.Run.Plugin.System",
+    "Microsoft.PowerToys.Run.Plugin.System.UnitTests",
+    "Microsoft.PowerToys.Run.Plugin.TimeDate",
+    "Microsoft.PowerToys.Run.Plugin.TimeDate.UnitTests",
+    "Microsoft.PowerToys.Run.Plugin.WindowsSettings",
+    "Microsoft.PowerToys.Run.Plugin.WindowsTerminal",
+    "MonacoPreviewHandler",
+    "MouseJump.Common",
+    "MouseJump.Common.UnitTests",
+    "MouseJump.HotKeys",
+    "MouseJump.HotKeys.UnitTests",
+    "MouseUtils.UITests",
+    "MouseUtils.UITests.Next",
+    "MouseWithoutBorders",
+    "MouseWithoutBorders.UnitTests",
+    "MouseWithoutBordersHelper",
+    "MouseWithoutBordersService",
+    "NewPlus.UITests",
+    "PdfPreviewHandler",
+    "PdfThumbnailProvider",
+    "Peek.Common",
+    "Peek.Common.UnitTests",
+    "Peek.UITests",
+    "Peek.UITests.Next",
+    "PowerAccent.Common",
+    "PowerAccent.Common.UnitTests",
+    "PowerAccent.Core",
+    "PowerAccent.Core.UnitTests",
+    "PowerAccent.UITests",
+    "PowerAccentKeyboardService",
+    "PowerDisplay.Cli",
+    "PowerDisplay.Cli.UnitTests",
+    "PowerDisplay.Contracts",
+    "PowerDisplay.Contracts.UnitTests",
+    "PowerDisplay.Ipc",
+    "PowerDisplay.Ipc.UnitTests",
+    "PowerDisplay.Lib",
+    "PowerDisplay.Lib.UnitTests",
+    "PowerDisplay.Models",
+    "PowerLauncher.Telemetry",
+    "PowerOCR.Core",
+    "PowerOCR.Core.UnitTests",
+    "PowerOCR.UITests",
+    "PowerRename.UITests",
+    "PowerRename.UITests.Next",
+    "PowerToys.DSC",
+    "PowerToys.DSC.UnitTests",
+    "PowerToys.Interop",
+    "PowerToys.ModuleContracts",
+    "PowerToys.Settings.DSC.Schema.Generator",
+    "Preview.BgcodePreviewHandler.UnitTests",
+    "Preview.BgcodeThumbnailProvider.UnitTests",
+    "Preview.GcodePreviewHandler.UnitTests",
+    "Preview.GcodeThumbnailProvider.UnitTests",
+    "Preview.MarkdownPreviewHandler.UnitTests",
+    "Preview.PdfPreviewHandler.UnitTests",
+    "Preview.PdfThumbnailProvider.UnitTests",
+    "Preview.PreviewHandlerCommon.UnitTests",
+    "Preview.QoiPreviewHandler.UnitTests",
+    "Preview.QoiThumbnailProvider.UnitTests",
+    "Preview.StlThumbnailProvider.UnitTests",
+    "Preview.SvgPreviewHandler.UnitTests",
+    "Preview.SvgThumbnailProvider.UnitTests",
+    "PreviewHandlerCommon",
+    "PreviewPane.UITests",
+    "ProcessMonitorExtension",
+    "QoiPreviewHandler",
+    "QoiThumbnailProvider",
+    "RegistryPreview.FuzzTests",
+    "RegistryPreview.UITests",
+    "SamplePagesExtension",
+    "ScreenRuler.UITests",
+    "ScreenRuler.UITests.Next",
+    "Settings.UI.Library",
+    "Settings.UI.XamlIndexBuilder",
+    "Settings.UITests",
+    "SettingsAPI",
+    "StlThumbnailProvider",
+    "SvgPreviewHandler",
+    "SvgThumbnailProvider",
+    "UITestAutomation",
+    "UITestAutomation.Next",
+    "UITestAutomation.Next.UnitTests",
+    "Version",
+    "Workspaces.ModuleServices",
+    "Workspaces.TestApp",
+    "Workspaces.UITests.Next",
+    "WorkspacesCsharpLibrary",
+    "WorkspacesLauncherUI.UnitTests",
+    "Wox.Infrastructure",
+    "Wox.Plugin",
+    "ZoomIt.UITests",
+    "ZoomItSettingsInterop",
+    "bazel/dotnet/resx:resx2resources",
+    "logger"
+  ],
+  "ignore": {
+    "source_map": [
+      {
+        "from": "src/common/Common.UI/obj/x64/Release/net10.0-windows10.0.26100.0/Common.UI.AssemblyInfo.cs",
+        "to": "@msbuild/Common.UI/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/common/Common.UI/_msbuild/Common.UI/Common.UI.AssemblyInfo.cs",
+        "to": "@msbuild/Common.UI/assembly_info"
+      },
+      {
+        "from": "src/common/Common.UI/obj/x64/Release/net10.0-windows10.0.26100.0/Generated Files/CsWinRT/",
+        "to": "@cswinrt/Common.UI"
+      },
+      {
+        "from": "bazel-bin/src/common/Common.UI/cswinrt.cs",
+        "to": "@cswinrt/Common.UI"
+      },
+      {
+        "from": "src/common/Common.UI/obj/x64/Release/net10.0-windows10.0.26100.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Common.UI/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/common/Common.UI/_msbuild/Common.UI/.NETCoreApp_Version_v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/Common.UI/target_framework_attribute"
+      },
+      {
+        "from": "src/common/ManagedCommon/obj/x64/Release/net10.0-windows10.0.26100.0/ManagedCommon.AssemblyInfo.cs",
+        "to": "@msbuild/ManagedCommon/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/common/ManagedCommon/_msbuild/ManagedCommon/ManagedCommon.AssemblyInfo.cs",
+        "to": "@msbuild/ManagedCommon/assembly_info"
+      },
+      {
+        "from": "src/common/ManagedCommon/obj/x64/Release/net10.0-windows10.0.26100.0/Generated Files/CsWinRT/",
+        "to": "@cswinrt/ManagedCommon"
+      },
+      {
+        "from": "bazel-bin/src/common/ManagedCommon/cswinrt.cs",
+        "to": "@cswinrt/ManagedCommon"
+      },
+      {
+        "from": "src/common/ManagedCommon/obj/x64/Release/net10.0-windows10.0.26100.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/ManagedCommon/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/common/ManagedCommon/_msbuild/ManagedCommon/.NETCoreApp_Version_v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/ManagedCommon/target_framework_attribute"
+      },
+      {
+        "from": "src/common/ManagedTelemetry/Telemetry/obj/x64/Release/net10.0-windows10.0.26100.0/ManagedTelemetry.AssemblyInfo.cs",
+        "to": "@msbuild/ManagedTelemetry/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/common/ManagedTelemetry/Telemetry/_msbuild/ManagedTelemetry/ManagedTelemetry.AssemblyInfo.cs",
+        "to": "@msbuild/ManagedTelemetry/assembly_info"
+      },
+      {
+        "from": "src/common/ManagedTelemetry/Telemetry/obj/x64/Release/net10.0-windows10.0.26100.0/Generated Files/CsWinRT/",
+        "to": "@cswinrt/ManagedTelemetry"
+      },
+      {
+        "from": "bazel-bin/src/common/ManagedTelemetry/Telemetry/cswinrt.cs",
+        "to": "@cswinrt/ManagedTelemetry"
+      },
+      {
+        "from": "src/common/ManagedTelemetry/Telemetry/obj/x64/Release/net10.0-windows10.0.26100.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/ManagedTelemetry/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/common/ManagedTelemetry/Telemetry/_msbuild/ManagedTelemetry/.NETCoreApp_Version_v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/ManagedTelemetry/target_framework_attribute"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models/obj/x64/Release/MouseJump.Models.AssemblyInfo.cs",
+        "to": "@msbuild/MouseJump.Models/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models/_msbuild/MouseJump.Models/MouseJump.Models.AssemblyInfo.cs",
+        "to": "@msbuild/MouseJump.Models/assembly_info"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models/obj/x64/Release/Generated Files/CsWinRT/",
+        "to": "@cswinrt/MouseJump.Models"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models/cswinrt.cs",
+        "to": "@cswinrt/MouseJump.Models"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models/obj/x64/Release/MouseJump.Models.GlobalUsings.g.cs",
+        "to": "@msbuild/MouseJump.Models/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models/_msbuild/MouseJump.Models/MouseJump.Models.GlobalUsings.g.cs",
+        "to": "@msbuild/MouseJump.Models/global_usings"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models/obj/x64/Release/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/MouseJump.Models/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models/_msbuild/MouseJump.Models/.NETCoreApp_Version_v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/MouseJump.Models/target_framework_attribute"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models.UnitTests/obj/x64/Release/MouseJump.Models.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/assembly_info"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models.UnitTests/_msbuild/MouseJump.Models.UnitTests/MouseJump.Models.UnitTests.AssemblyInfo.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/assembly_info"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models.UnitTests/obj/x64/Release/Generated Files/CsWinRT/",
+        "to": "@cswinrt/MouseJump.Models.UnitTests"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models.UnitTests/cswinrt.cs",
+        "to": "@cswinrt/MouseJump.Models.UnitTests"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models.UnitTests/obj/x64/Release/MouseJump.Models.UnitTests.GlobalUsings.g.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/global_usings"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models.UnitTests/_msbuild/MouseJump.Models.UnitTests/MouseJump.Models.UnitTests.GlobalUsings.g.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/global_usings"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models.UnitTests/obj/x64/Release/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models.UnitTests/_msbuild/MouseJump.Models.UnitTests/.NETCoreApp_Version_v10.0.AssemblyAttributes.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/target_framework_attribute"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models.UnitTests/obj/x64/Release/SelfRegisteredExtensions.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/test_entry_point"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models.UnitTests/_msbuild/MouseJump.Models.UnitTests/SelfRegisteredExtensions.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/test_entry_point"
+      },
+      {
+        "from": "src/modules/MouseUtils/MouseJump.Models.UnitTests/obj/x64/Release/TestPlatformEntryPoint.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/test_entry_point_2"
+      },
+      {
+        "from": "bazel-bin/src/modules/MouseUtils/MouseJump.Models.UnitTests/_msbuild/MouseJump.Models.UnitTests/TestPlatformEntryPoint.cs",
+        "to": "@msbuild/MouseJump.Models.UnitTests/test_entry_point_2"
+      }
+    ],
+    "toolchain": [
+      "dotnet_sdk_version",
+      "pack:microsoft.netcore.app.ref"
+    ]
+  },
+  "include_csharp": true
+}

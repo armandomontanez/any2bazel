@@ -1,6 +1,7 @@
 load("//bazel:cppwinrt.bzl", "cppwinrt_projection")
 
 exports_files([
+    "nuget_lock.json",
     "vcpkg.json",
     "vcpkg-configuration.json",
 ])
@@ -13,3 +14,11 @@ cppwinrt_projection(
     visibility = ["//visibility:public"],
     winmds = ["@windows_sdk//:contract_winmds"],
 )
+
+# any2bazel:dotnet-exports begin (generated; do not edit between the markers)
+exports_files([
+    "src/.editorconfig",
+    "src/codeAnalysis/GlobalSuppressions.cs",
+    "src/codeAnalysis/StyleCop.json",
+])
+# any2bazel:dotnet-exports end

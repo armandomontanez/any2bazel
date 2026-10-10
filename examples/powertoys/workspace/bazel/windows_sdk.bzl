@@ -9,7 +9,9 @@ Headers and import libraries are NOT exposed here: the C++ toolchain already
 provides them (pin its SDK with BAZEL_WINSDK_FULL_VERSION to the same version).
 This repository is for the things a toolchain does not carry:
 
-  @<name>//:contract_winmds   the API contract metadata, input to cppwinrt/midl
+  @<name>//:contract_winmds   the API contract metadata, in the SDK's layout
+  @<name>//:winmds            the same files in one directory (short paths)
+  @<name>//:platform_winmds   the contracts of the Windows platform itself
   @<name>//:union_winmd       the merged Windows.winmd
   @<name>//:bin/<arch>/<tool>.exe   midl, rc, mt, mdmerge, makepri, ...
 """
@@ -54,12 +56,47 @@ def _windows_sdk_impl(rctx):
     rctx.symlink("%s/References/%s" % (root, version), "References")
     rctx.symlink("%s/UnionMetadata/%s" % (root, version), "UnionMetadata")
     rctx.symlink("%s/bin/%s" % (root, version), "bin")
+
+    # The same contract metadata in ONE directory. Under References each file
+    # is <Contract>/<version>/<Contract>.winmd; below Bazel's execution root
+    # the longest of those paths pass MAX_PATH, and midl cannot open them.
+    for contract in rctx.path("%s/References/%s" % (root, version)).readdir():
+        for contract_version in contract.readdir():
+            for f in contract_version.readdir():
+                if f.basename.endswith(".winmd"):
+                    rctx.symlink(f, "winmd/" + f.basename)
+
+    # The contracts that make up the Windows platform of this SDK version.
+    # This is what a tool given the SDK BY VERSION (`cswinrt -input 10.0.x`,
+    # `cppwinrt -in sdk`) reads: the list in Platform.xml, not every contract
+    # installed under References.
+    platform = rctx.read("%s/Platforms/UAP/%s/Platform.xml" % (root, version))
+    for entry in platform.split("<ApiContract ")[1:]:
+        name = entry.split('name="', 1)[1].split('"', 1)[0]
+        contract_version = entry.split('version="', 1)[1].split('"', 1)[0]
+        rctx.symlink(
+            "%s/References/%s/%s/%s/%s.winmd" % (root, version, name, contract_version, name),
+            "platform/%s.winmd" % name,
+        )
     rctx.file("BUILD.bazel", """\
 package(default_visibility = ["//visibility:public"])
 
 filegroup(
     name = "contract_winmds",
     srcs = glob(["References/**/*.winmd"]),
+)
+
+# The contract metadata again, flat: use this one for midl and mdmerge.
+filegroup(
+    name = "winmds",
+    srcs = glob(["winmd/*.winmd"]),
+)
+
+# The contracts of the Windows platform (Platform.xml): what `-input <SDK
+# version>` means to cswinrt and cppwinrt.
+filegroup(
+    name = "platform_winmds",
+    srcs = glob(["platform/*.winmd"]),
 )
 
 filegroup(

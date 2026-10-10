@@ -57,7 +57,9 @@ def _midl_impl(ctx):
             outputs.append(out)
         else:
             args.add("/" + kind, "none")
-    args.add(ctx.file.src)
+
+    # With backslashes, as MSBuild spells it: see winrt.bzl.
+    args.add(ctx.file.src.path.replace("/", "\\"))
 
     ctx.actions.run(
         executable = ctx.executable.midl,

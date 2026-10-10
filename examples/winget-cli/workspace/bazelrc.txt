@@ -19,3 +19,7 @@ build -c opt
 build --copt=/UNOMINMAX
 build --copt=/U_CRT_SECURE_NO_DEPRECATE
 build --copt=/U_CRT_SECURE_NO_WARNINGS
+
+# rules_dotnet finds a program's assemblies through its runfiles tree, which
+# Windows only gets on request (and needs Developer Mode for the symlinks).
+common --enable_runfiles

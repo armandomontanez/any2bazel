@@ -1,5 +1,9 @@
 load("//bazel:cppwinrt.bzl", "cppwinrt_projection")
 
+exports_files([
+    "nuget_lock.json",
+])
+
 # The C++/WinRT projection of the Windows SDK. MSBuild regenerates this into
 # every project's `<IntDir>Generated Files`; here it is built once.
 cppwinrt_projection(
@@ -8,3 +12,9 @@ cppwinrt_projection(
     visibility = ["//visibility:public"],
     winmds = ["@windows_sdk//:contract_winmds"],
 )
+
+# any2bazel:dotnet-exports begin (generated; do not edit between the markers)
+exports_files([
+    ".editorconfig",
+])
+# any2bazel:dotnet-exports end
