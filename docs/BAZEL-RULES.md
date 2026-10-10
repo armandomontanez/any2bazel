@@ -253,7 +253,9 @@ writing a `csharp_library` by hand:
   WindowsDesktop's real one. Each has a workaround that does not patch
   rules_dotnet; for the first three it is `csc_assembly.bzl`, a compile with
   exactly the reference build's inputs that hands its result back through
-  `import_library`.
+  `import_library`. For the resource names and `winexe` there are also
+  patches to rules_dotnet itself, in
+  [`patches/rules_dotnet/`](../patches/rules_dotnet/README.md).
 * **`runtimeconfig.json` names `Microsoft.NETCore.App` only.** A program that
   loads WPF or WinForms does not start as built.
 

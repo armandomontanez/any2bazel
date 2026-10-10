@@ -1,0 +1,2 @@
+# Bazel applies these to files with LF line ends: keep them LF on every checkout.
+*.patch text eol=lf

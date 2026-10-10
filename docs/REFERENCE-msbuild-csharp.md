@@ -230,18 +230,20 @@ program finds its assemblies through the runfiles tree). Its compile action is
 drops.
 
 Everything below was hit on one of the two projects, except the two rows marked
-(source), which are read from rules_dotnet's code and were not run into. Each has a template or an emitter rule that closes it without
-patching rules_dotnet:
+(source), which are read from rules_dotnet's code and were not run into. Each
+has a template or an emitter rule that closes it without patching rules_dotnet;
+two also have a [patch](#patches-for-rules_dotnet) that fixes them at the
+source:
 
 | rules_dotnet does | MSBuild does | Consequence | Closed by |
 |---|---|---|---|
-| names every embedded resource `<assembly>.<path>` | `<RootNamespace>.<path>`, or `LogicalName` | `ResourceManager` finds nothing when the assembly name is not the root namespace (`PowerToys.ManagedCommon` / `ManagedCommon`) | `csc_assembly` |
+| names every embedded resource `<assembly>.<path>` | `<RootNamespace>.<path>`, or `LogicalName` | `ResourceManager` finds nothing when the assembly name is not the root namespace (`PowerToys.ManagedCommon` / `ManagedCommon`) | `csc_assembly`; or the `named_resources` patch |
 | passes every assembly of the .NET Framework reference pack (339) | the ones referenced, plus facades (221) | two of the extra ones declare `Microsoft.Windows`; `Windows.Foundation` inside `namespace Microsoft...` no longer binds | `csc_assembly` |
 | `project_sdk = "web"` passes every analyzer of the ASP.NET pack | the ones the project enables | the configuration-binding generator runs and the compile fails (CS9137) | `csc_assembly` |
 | passes its whole base pack beside a pack that displaces part of it | drops the displaced assembly | two `WindowsBase.dll`; types "could not be found" | `overrides` in the lock |
 | drops package assets under a framework it does not know (source) | uses them | missing references on `-windows` frameworks | the lock |
 | has no WindowsDesktop reference pack | reads it from the SDK | no WPF / WinForms references | pack through the lock |
-| declares `winexe` and compiles with `/target:exe` | `/target:winexe` | a GUI program opens a console | `/target:winexe` in `compiler_options` |
+| declares `winexe` and compiles with `/target:exe` | `/target:winexe` | a GUI program opens a console | `/target:winexe` in `compiler_options`; or the `winexe` patch |
 | `warning_level` accepts 0-5 | current SDKs pass `/warn:8` and up | analysis fails | `compiler_options` |
 | defines `NETSTANDARD*_OR_GREATER` for every framework | does not | a warning in the diff; harmless unless code tests them | accepted |
 | lets two selections of one package overwrite each other at run time (keyed by library name and version) | deploys the program's own selection | a program loses assemblies to a library's compile-only selection | one library name per selection; run-time files on programs only |
@@ -277,6 +279,21 @@ It is for those cases, not a replacement: it has none of rules_dotnet's
 handling of run-time dependencies or executables. An executable compiled this
 way is built and can be referenced (by its tests), but is not runnable under
 Bazel.
+
+### Patches for rules_dotnet
+
+[`patches/rules_dotnet/`](../patches/rules_dotnet/README.md) has two patches
+against 0.22.2 for a migration that would rather fix rules_dotnet than work
+around it, applied with `single_version_override(patches = ...)` in
+`MODULE.bazel`:
+
+* `0001-honor-winexe.patch`: `winexe = True` reaches the compiler.
+* `0002-named-resources.patch`: a `named_resources = {file: logical name}`
+  attribute on the library, binary and test rules. With it a project whose
+  resource names rules_dotnet could not give is an ordinary `csharp_library`
+  (and, unlike with `csc_assembly`, an executable stays runnable).
+
+The emitter assumes neither: its output builds on an unpatched rules_dotnet.
 
 ## Templates
 

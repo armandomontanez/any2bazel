@@ -1,0 +1,66 @@
+rules_dotnet: honor `winexe` on binaries and tests
+
+`csharp_binary`, `csharp_test`, `fsharp_binary` and `fsharp_test` declare a
+`winexe` attribute ("If true, output a winexe-style executable, otherwise
+output a console-style executable") and then compile with a hard-coded
+`/target:exe`. The attribute has no effect: a program built for the Windows
+subsystem (MSBuild `OutputType=WinExe`) comes out as a console program and
+opens a console window when started.
+
+Pass `winexe` through as the compiler's target kind. Nothing else in the rules
+looks at the target kind of an executable.
+
+Made against rules_dotnet 0.22.2. Apply with -p1.
+
+diff --git a/dotnet/private/rules/csharp/binary.bzl b/dotnet/private/rules/csharp/binary.bzl
+index 97c12ae..c074bf2 100644
+--- a/dotnet/private/rules/csharp/binary.bzl
++++ b/dotnet/private/rules/csharp/binary.bzl
+@@ -36,7 +36,7 @@ def _compile_action(ctx, tfm):
+         appsetting_files = ctx.files.appsetting_files,
+         compile_data = ctx.files.compile_data,
+         out = ctx.attr.out,
+-        target = "exe",
++        target = "winexe" if ctx.attr.winexe else "exe",
+         target_name = ctx.attr.name,
+         target_framework = tfm,
+         toolchain = toolchain,
+diff --git a/dotnet/private/rules/csharp/test.bzl b/dotnet/private/rules/csharp/test.bzl
+index dc9bda4..ec7d70b 100644
+--- a/dotnet/private/rules/csharp/test.bzl
++++ b/dotnet/private/rules/csharp/test.bzl
+@@ -38,7 +38,7 @@ def _compile_action(ctx, tfm):
+         appsetting_files = ctx.files.appsetting_files,
+         compile_data = ctx.files.compile_data,
+         out = ctx.attr.out,
+-        target = "exe",
++        target = "winexe" if ctx.attr.winexe else "exe",
+         target_name = ctx.attr.name,
+         target_framework = tfm,
+         toolchain = toolchain,
+diff --git a/dotnet/private/rules/fsharp/binary.bzl b/dotnet/private/rules/fsharp/binary.bzl
+index cd15a81..ed452b0 100644
+--- a/dotnet/private/rules/fsharp/binary.bzl
++++ b/dotnet/private/rules/fsharp/binary.bzl
+@@ -34,7 +34,7 @@ def _compile_action(ctx, tfm):
+         appsetting_files = ctx.files.appsetting_files,
+         compile_data = ctx.files.compile_data,
+         out = ctx.attr.out,
+-        target = "exe",
++        target = "winexe" if ctx.attr.winexe else "exe",
+         target_name = ctx.attr.name,
+         target_framework = tfm,
+         toolchain = toolchain,
+diff --git a/dotnet/private/rules/fsharp/test.bzl b/dotnet/private/rules/fsharp/test.bzl
+index 5f595c4..42a2a3d 100644
+--- a/dotnet/private/rules/fsharp/test.bzl
++++ b/dotnet/private/rules/fsharp/test.bzl
+@@ -37,7 +37,7 @@ def _compile_action(ctx, tfm):
+         appsetting_files = ctx.files.appsetting_files,
+         compile_data = ctx.files.compile_data,
+         out = ctx.attr.out,
+-        target = "exe",
++        target = "winexe" if ctx.attr.winexe else "exe",
+         target_name = ctx.attr.name,
+         target_framework = tfm,
+         toolchain = toolchain,
