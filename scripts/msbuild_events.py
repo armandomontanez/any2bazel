@@ -65,7 +65,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 SCHEMA_VERSION = 1
 
@@ -297,6 +297,86 @@ def dump_binlog(binlog: str, out_ndjson: str, msbuild: Optional[str] = None,
         raise RuntimeError(
             "replaying %s with %s produced no complete event dump (exit %d):\n%s%s"
             % (binlog, exe, res.returncode, output, hint))
+    return exe
+
+
+# What makes MSBuild compute a C# compile without running it. This is the
+# property set an IDE's design-time build uses: CoreCompile always runs (it is
+# never "up to date"), the Csc task returns its command line as items instead
+# of starting the compiler, and referenced projects are asked where their
+# output WILL be instead of being built.
+DESIGN_TIME_PROPERTIES = {
+    "DesignTimeBuild": "true",
+    "BuildingInsideVisualStudio": "true",
+    "BuildProjectReferences": "false",
+    "SkipCompilerExecution": "true",
+    "ProvideCommandLineArgs": "true",
+}
+
+
+# `Compile` alone leaves out what a build does before it. Resource generation
+# is the part that reaches the compiler: without it every `/resource:` of a
+# `.resx` is missing from the computed command line.
+DESIGN_TIME_TARGETS = "PrepareResources;Compile"
+
+
+def _msbuild_escape(value: str) -> str:
+    """Escape a property value for the MSBuild task's `Properties` attribute,
+    where `;` separates properties and `$( @( %(` would be expanded."""
+    out = value.replace("%", "%25")
+    for ch in ";$@'*?":
+        out = out.replace(ch, "%%%02X" % ord(ch))
+    return out
+
+
+def design_time_project(instances: Sequence[Tuple[str, Dict[str, str]]]) -> str:
+    """Text of a traversal project that runs DESIGN_TIME_TARGETS of each
+    (project file, global properties) instance under DESIGN_TIME_PROPERTIES."""
+    from xml.sax.saxutils import quoteattr
+    lines = ["<Project>", '  <Target Name="Any2BazelDesignTime">']
+    for project_file, global_properties in instances:
+        merged = dict(global_properties)
+        merged.update(DESIGN_TIME_PROPERTIES)
+        properties = ";".join("%s=%s" % (k, _msbuild_escape(v)) for k, v in sorted(merged.items())
+                              if k and v is not None)
+        lines.append("    <MSBuild Projects=%s Targets=\"%s\" Properties=%s "
+                     "ContinueOnError=\"true\" />"
+                     % (quoteattr(project_file), DESIGN_TIME_TARGETS, quoteattr(properties)))
+    lines += ["  </Target>", "</Project>", ""]
+    return "\n".join(lines)
+
+
+def design_time_compile(instances: Sequence[Tuple[str, Dict[str, str]]], out_ndjson: str,
+                        msbuild: Optional[str] = None) -> str:
+    """Ask MSBuild what it WOULD pass to the C# compiler for each instance,
+    without compiling anything, and dump that build's events to `out_ndjson`.
+    Returns the MSBuild.exe used.
+
+    A compile MSBuild skips as up to date logs no command line, and C# has no
+    tracking log to fall back on. The instances are run with exactly the
+    global properties the real build gave them (the caller reads those from
+    the real build's log), so the computed command lines are the ones a
+    recompile would use; the extractor checks that claim against every
+    project that did compile.
+    """
+    exe = find_msbuild(msbuild)
+    work = tempfile.mkdtemp(prefix="any2bazel-designtime-")
+    project = os.path.join(work, "designtime.proj")
+    binlog = os.path.join(work, "designtime.binlog")
+    try:
+        with open(project, "w", encoding="utf-8", newline="\n") as f:
+            f.write(design_time_project(instances))
+        # Through a binary log and a replay, like the real build: only the
+        # binary logger makes MSBuild record task outputs, which is where the
+        # computed command line is.
+        res = subprocess.run([exe, project, "-nologo", "-noconlog", "-m", "-bl:" + binlog],
+                             capture_output=True, text=True, check=False)
+        if not os.path.isfile(binlog):
+            raise RuntimeError("the design-time pass wrote no log (exit %d):\n%s"
+                               % (res.returncode, res.stdout[-4000:] + res.stderr[-4000:]))
+        dump_binlog(binlog, out_ndjson, exe)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     return exe
 
 

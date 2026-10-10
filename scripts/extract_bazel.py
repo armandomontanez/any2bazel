@@ -46,6 +46,7 @@ import re
 import sys
 from typing import Dict, Iterable, List, Optional
 
+import canonicalize_csc as csc_dialect
 from model import (Action, BuildSystem, CanonicalModel, Target, TargetKind,
                    TargetRole)
 from serialize import dump_model
@@ -60,6 +61,8 @@ _JAVAC = {"Javac"}
 _TSPROGRAM = {"TsProgram"}
 # C# compile, as emitted by rules_dotnet. One action per assembly.
 _CSHARP = {"CSharpCompile"}
+# An output of an exec configuration: `bazel-out/x64_windows-opt-exec-ST-<hash>/bin/...`.
+_EXEC_CONFIG = re.compile(r"^bazel-out/[^/]*-exec(-[^/]*)?/")
 
 # Infer target kind from the link ACTION, not just the output extension.
 # Mnemonic is authoritative for archives: CppArchive always produces a static
@@ -348,6 +351,7 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
             by_target[label_name].kind = kind
         return by_target[label_name]
 
+    csharp_command_lines: List[tuple] = []
     # Store raw actions; interpretation (TUs, flags, deps) is the differ's job.
     for action in container.get("actions", []):
         mnem = action.get("mnemonic", "")
@@ -385,16 +389,28 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
                                     outputs=outs))
             continue
         elif mnem in _CSHARP:
-            # An assembly is an archive of compiled code -> STATIC, like a jar.
-            # rules_dotnet passes the sources in a param file, which aquery
-            # never materializes, so record them from the declared inputs.
-            t = target_for(name, TargetKind.STATIC)
+            # An assembly is an archive of compiled code -> STATIC, like a jar,
+            # unless csc is told to make a program. rules_dotnet passes
+            # everything in a param file: with `--include_param_files` the
+            # arguments are complete; without it only the declared inputs say
+            # what the sources are, so those are recorded too.
+            low = [a.lower() for a in args]
+            if "/refonly" in low:
+                continue    # the reference-only twin of a real compile
+            if any(_EXEC_CONFIG.match(o.replace("\\", "/")) for o in outs):
+                # Built for the build itself (a converter some action runs),
+                # not a deliverable: nothing in the reference corresponds.
+                continue
+            program = any(a in ("/target:exe", "/target:winexe", "-target:exe",
+                                "-target:winexe") for a in low)
+            t = target_for(name, TargetKind.EXECUTABLE if program else TargetKind.STATIC)
             sources = tuple(
                 p for p in (artifacts.get(i, "") for i in
                             depsets.resolve(action.get("inputDepSetIds", [])))
                 if p.lower().endswith(".cs"))
             t.actions.append(Action(mnemonic="CSharpCompile", arguments=args,
                                     inputs=sources, outputs=outs))
+            csharp_command_lines.append(args)
             continue
         elif mnem in _TSPROGRAM:
             # tsc runs as ONE action in Bazel, so we derive per-file
@@ -415,6 +431,8 @@ def extract(aquery_path: str, repo_root: str) -> CanonicalModel:
     for t in by_target.values():
         t.role = _classify_bazel(t)
         model.add(t)
+    # .NET toolchain facts: the SDK whose compiler ran, the reference packs.
+    model.toolchain.update(csc_dialect.dotnet_facts(csharp_command_lines))
     return model
 
 

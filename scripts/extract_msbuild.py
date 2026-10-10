@@ -58,8 +58,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+import msbuild_csharp as csharp
 import msbuild_events as events
 import msbuild_origins as origins_mod
+import canonicalize_csc as csc_dialect
 import wincmdline
 from canonicalize_msvc import (canonicalize_cl_flags, canonicalize_link_flags,
                                cl_include_dirs, lib_identity, link_libraries,
@@ -358,6 +360,9 @@ class _Extracted:
     actions: List[Action] = field(default_factory=list)
     provenance: Counter = field(default_factory=Counter)
     unrecovered: List[str] = field(default_factory=list)
+    # C#: how the design-time command line differs from the one the build
+    # really ran (None: not both available; {}: identical).
+    design_time_check: Optional[dict] = None
 
 
 def _compile_cpp(g: _Group, use_tlogs: bool, truecase: _TrueCase) -> _Extracted:
@@ -464,7 +469,207 @@ def _link(g: _Group, kind: TargetKind, use_tlogs: bool,
             "tlog" if verified else "tlog_unverified")
 
 
-def _compile_csharp(g: _Group) -> _Extracted:
+MANAGED_EXTS = (".csproj", ".vbproj", ".fsproj")
+
+
+def _instance_key(project_file: str, global_properties: Dict[str, str]) -> tuple:
+    """What identifies one build of a managed project across two logs."""
+    g = {k.lower(): v for k, v in global_properties.items()}
+    return (win_norm(project_file).lower(), g.get("configuration", "").lower(),
+            g.get("platform", "").lower(), g.get("targetframework", "").lower())
+
+
+def _build_instance(g: _Group) -> Optional[events.Project]:
+    return next((i for i in g.instances if _is_build_request(i)), None)
+
+
+def design_time_instances(log: events.BuildLog, repo_root: str) -> List[Tuple[str, Dict[str, str]]]:
+    """(project file, global properties) of every managed project instance the
+    build ran: the input of `msbuild_events.design_time_compile`."""
+    out = []
+    for g in _groups(log, repo_root):
+        inst = _build_instance(g)
+        if g.ext in MANAGED_EXTS and inst is not None:
+            out.append((g.file, dict(inst.globals)))
+    return out
+
+
+def _design_time_commands(log: events.BuildLog) -> Dict[tuple, Tuple[str, ...]]:
+    """instance key -> csc argv, from a design-time log. The arguments come
+    from the Csc task's `CommandLineArgs` output (one item per argument), so
+    nothing is re-tokenized."""
+    out: Dict[tuple, Tuple[str, ...]] = {}
+    for project in log.projects.values():
+        for task in project.tasks("Csc"):
+            items = task.outputs.get("CommandLineArgs")
+            if not items:
+                continue
+            tool = wincmdline.split_tool(task.command_lines[0])[0] if task.command_lines else ""
+            out[_instance_key(project.file, project.globals)] = (
+                tool or "csc.exe", *_without_design_time_artifacts(i.spec for i in items))
+    return out
+
+
+# midl switches that say where output goes or that the WinRT metadata step
+# always has; everything else is the project's choice.
+_MIDL_FIXED = {"/winrt", "/nologo", "/notlb", "/nomidl"}
+_MIDL_FIXED_WITH_VALUE = {"/metadata_dir", "/winmd", "/h", "/dlldata", "/iid", "/proxy",
+                          "/client", "/server", "/out", "/tlb"}
+_RSP_QUOTED = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def _winrt_metadata(target: Target, steps: List[dict], repo_root: str) -> Optional[dict]:
+    """How a project turns MIDL 3 into its `.winmd`: the `midl /winrt` action,
+    the `mdmerge` step after it, and where the result is copied to. This is
+    the head of the WinRT chain: every projection (C++/WinRT, C#/WinRT) is
+    generated from the merged file, and other projects find it by path."""
+    midl = [a for a in target.actions if a.mnemonic == "Midl"
+            and any(x.lower() == "/winrt" for x in a.arguments)]
+    if not midl:
+        return None
+    idl: List[str] = []
+    per_action: List[List[str]] = []
+    for action in midl:
+        args = list(action.arguments[1:])
+        options: List[str] = []
+        per_action.append(options)
+        i = 0
+        while i < len(args):
+            tok, low = args[i], args[i].lower()
+            if low in _MIDL_FIXED_WITH_VALUE:
+                i += 2
+                continue
+            if low in _MIDL_FIXED or tok.startswith("@"):
+                i += 1
+                continue
+            if low.endswith(".idl") and not tok.startswith(("/", "-")):
+                idl.append(_repo_rel(_join(action.cwd, tok), repo_root))
+            else:
+                options.append(tok)
+            i += 1
+    # One midl run per .idl, normally all with the project's one set of options.
+    out: dict = {"idl": sorted(set(idl)), "midl_options": per_action[0]}
+    if any(o != per_action[0] for o in per_action[1:]):
+        out["midl_options_vary"] = True
+    references: List[str] = []
+    merged_dir = ""
+    for step in steps:
+        if step.get("kind") != "write":
+            continue
+        text = " ".join(step.get("lines", []))
+        tokens = [a or b for a, b in _RSP_QUOTED.findall(text)]
+        if step["file"].lower().endswith("midlrt.rsp"):
+            for flag, value in zip(tokens, tokens[1:]):
+                if flag.lower() == "/reference" and is_abs(value):
+                    rel = _repo_rel(win_norm(value), repo_root)
+                    if not is_abs(rel):
+                        references.append(rel)
+        elif step["file"].lower().endswith("mdmerge.rsp"):
+            # mdmerge runs where midl ran, in the project directory. The
+            # intermediate directory the response file is in can be anywhere
+            # below it (`x64\Release\`, `obj\x64\Release\`).
+            base = ntpath.dirname(win_norm(_join(repo_root, step["file"])))
+            project_dir = win_norm(midl[0].cwd) if midl[0].cwd \
+                else ntpath.dirname(ntpath.dirname(base))
+            for flag, value in zip(tokens, tokens[1:]):
+                if flag.lower() == "-o":
+                    merged_dir = _repo_rel(_join(project_dir, value), repo_root)
+            depth = next((t[3:] for t in tokens if t.lower().startswith("-n:")), "")
+            if depth:
+                out["namespace_depth"] = int(depth)
+    if references:
+        out["references"] = sorted(set(references))
+    copies: List[str] = []
+    for step in steps:
+        if step.get("kind") != "copy":
+            continue
+        sources = step.get("from", [])
+        destinations = step.get("to", [])
+        if isinstance(destinations, str):
+            continue
+        for source, destination in zip(sources, destinations):
+            if source.lower().endswith(".winmd") and merged_dir \
+                    and source.lower().startswith(merged_dir.lower() + "/"):
+                out["winmd"] = source
+                copies.append(destination)
+    if copies:
+        out["copies"] = sorted(set(copies))
+    return out
+
+
+def _managed_owner(path: str, outputs: Dict[str, List[_Group]], asking: str) -> Optional[str]:
+    """Name of the managed target whose output `path` is, or None. A project
+    that multi-targets writes one assembly per framework under the same file
+    name; the framework directory in the path says which one."""
+    candidates = [g for g in outputs.get(ntpath.basename(path.replace("/", "\\")).lower(), [])
+                  if g.name != asking]
+    if not candidates:
+        return None
+    probe = "\\" + win_norm(path).lower() + "\\"
+    for g in candidates:
+        tfm = g.prop("TargetFramework").lower()
+        if tfm and ("\\%s\\" % tfm) in probe:
+            return g.name
+    return candidates[0].name
+
+
+def _without_design_time_artifacts(args: Iterable[str]) -> List[str]:
+    """A design-time build suppresses CS2008 ("no source files specified") so
+    that an empty project does not error in the IDE. It is the one thing the
+    pass adds to every command line that a real build does not have."""
+    out = []
+    for tok in args:
+        if tok[:8].lower() in ("/nowarn:", "-nowarn:"):
+            ids = [w for w in re.split(r"[;,]", tok[8:]) if w.strip() and w.strip() != "2008"]
+            if not ids:
+                continue
+            tok = tok[:8] + ",".join(ids)
+        out.append(tok)
+    return out
+
+
+def _resource_sources(project_dir: str, tasks: Iterable[events.Task]) -> Dict[str, str]:
+    """generated `.resources` path (absolute, lower-case) -> the `.resx` it
+    was generated from (absolute), from GenerateResource tasks. The compiler
+    only sees the generated file; a BUILD author needs the source."""
+    out: Dict[str, str] = {}
+    for task in tasks:
+        sources = task.inputs.get("Sources", [])
+        outputs = task.inputs.get("OutputResources", [])
+        for source, output in zip(sources, outputs):
+            out[_join(project_dir, output.spec).lower()] = _join(project_dir, source.spec)
+    return out
+
+
+def _design_time_resources(log: events.BuildLog) -> Dict[tuple, Dict[str, str]]:
+    out: Dict[tuple, Dict[str, str]] = {}
+    for project in log.projects.values():
+        found = _resource_sources(ntpath.dirname(win_norm(project.file)),
+                                  project.tasks("GenerateResource"))
+        if found:
+            out.setdefault(_instance_key(project.file, project.globals), {}).update(found)
+    return out
+
+
+def _csc_mismatch(real: Sequence[str], computed: Sequence[str], repo_root: str,
+                  cwd: str) -> dict:
+    """Fields in which a design-time command line differs from the one the
+    build ran, canonically (so quoting and order do not count)."""
+    a = csc_dialect.parse(real, repo_root, cwd=cwd)
+    b = csc_dialect.parse(computed, repo_root, cwd=cwd)
+    out: dict = {}
+    for name in ("sources", "defines", "options", "references", "analyzers",
+                 "additional_files", "analyzer_configs", "resources"):
+        left = {str(x).lower() for x in getattr(a, name)}
+        right = {str(x).lower() for x in getattr(b, name)}
+        if left != right:
+            out[name] = {"build_only": sorted(left - right)[:20],
+                         "design_time_only": sorted(right - left)[:20]}
+    return out
+
+
+def _compile_csharp(g: _Group, design_time: Optional[Dict[tuple, Tuple[str, ...]]] = None
+                    ) -> _Extracted:
     out = _Extracted()
     for task in g.tasks("Csc"):
         for cmd in task.command_lines:
@@ -472,6 +677,15 @@ def _compile_csharp(g: _Group) -> _Extracted:
             out.actions.append(Action(mnemonic="CSharpCompile", arguments=(tool, *args),
                                       cwd=g.dir))
             out.provenance["binlog"] += 1
+    inst = _build_instance(g)
+    computed = (design_time or {}).get(_instance_key(g.file, inst.globals)) if inst else None
+    if computed and out.actions:
+        out.design_time_check = _csc_mismatch(out.actions[0].arguments, computed, "", g.dir)
+    elif computed:
+        # The build skipped this compile as up to date; this is the command
+        # line MSBuild computes for it now, from the same global properties.
+        out.actions.append(Action(mnemonic="CSharpCompile", arguments=computed, cwd=g.dir))
+        out.provenance["design_time"] += 1
     if not out.actions:
         # Compile skipped as up to date: MSBuild still logged the target's
         # declared inputs, which include every source.
@@ -916,8 +1130,13 @@ def _root_file(log: events.BuildLog) -> str:
 # ---- extraction -----------------------------------------------------------------
 
 def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
-            fs: bool = True) -> Tuple[CanonicalModel, dict]:
+            fs: bool = True, design_time: Optional[str] = None
+            ) -> Tuple[CanonicalModel, dict]:
     """Build the model and the report from an event dump.
+
+    `design_time` is the event dump of a design-time pass over the managed
+    projects (`msbuild_events.design_time_compile`): the source of C# command
+    lines for compiles the build skipped.
 
     `fs=False` forbids touching the filesystem beyond the dump itself (no
     tracking logs, no git, no package hashes): what tests use, and what an
@@ -926,6 +1145,10 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
     repo_root = win_norm(repo_root) if is_abs(repo_root) else os.path.abspath(repo_root)
     log = events.load(events_path)
     groups = _groups(log, repo_root)
+    design_time_log = events.load(design_time) if design_time else None
+    computed_csc = _design_time_commands(design_time_log) if design_time_log else None
+    computed_resources = _design_time_resources(design_time_log) if design_time_log else {}
+    design_time_checks: Dict[str, dict] = {}
     use_tlogs = use_tlogs and fs
     truecase = _TrueCase(fs)
 
@@ -961,8 +1184,10 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
                         g.prop("WindowsTargetPlatformVersion") or g.prop("TargetPlatformVersion"),
                         _ARCH.get(g.prop("Platform").lower(), g.prop("Platform").lower()))] += 1
         else:
-            compiled = _compile_csharp(g) if g.ext in (".csproj", ".vbproj", ".fsproj") \
+            compiled = _compile_csharp(g, computed_csc) if g.ext in MANAGED_EXTS \
                 else _Extracted()
+            if compiled.design_time_check is not None:
+                design_time_checks[g.name] = compiled.design_time_check
             target.actions.extend(compiled.actions)
             link, link_from = None, ""
         for path in ([g.prop("TargetPath")] + (list(link.outputs) if link else [])):
@@ -1062,12 +1287,23 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
         steps = _steps(g, repo_root)
         if steps:
             entry["steps"] = steps
+        winrt = _winrt_metadata(target, steps, repo_root)
+        if winrt:
+            entry["winrt"] = winrt
         report_targets[g.name] = entry
 
     # The digests need the final path map, which is only complete once every
     # project's paths have been classified.
     model.path_map = origins.path_map()
     group_of = {g.name: g for g, *_ in built}
+    # assembly file name -> the managed projects that write it (one per target
+    # framework when a project multi-targets).
+    managed_outputs: Dict[str, List[_Group]] = {}
+    for g, *_ in built:
+        if g.ext in MANAGED_EXTS:
+            file_name = g.prop("TargetFileName") or ntpath.basename(g.prop("TargetPath"))
+            if file_name:
+                managed_outputs.setdefault(file_name.lower(), []).append(g)
     undeclared: Dict[str, List[str]] = {}
     for name, entry in report_targets.items():
         compiles = [a for a in model.targets[name].actions if a.mnemonic == "CppCompile"]
@@ -1107,6 +1343,28 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
                         if a.mnemonic in ("ResourceCompile", "Midl"))
         if other:
             entry["other_actions"] = dict(other)
+        managed = next((a for a in model.targets[name].actions
+                        if a.mnemonic == "CSharpCompile" and a.arguments), None)
+        if managed is not None:
+            g = group_of[name]
+            inst = _build_instance(g)
+            resx = _resource_sources(g.dir, g.tasks("GenerateResource"))
+            if not resx and inst is not None:
+                resx = computed_resources.get(_instance_key(g.file, inst.globals), {})
+            entry["csharp"] = csharp.digest(
+                managed.arguments, repo_root, managed.cwd, fs=fs,
+                is_generated=lambda p: origins.classify(p).kind == origins_mod.GENERATED,
+                project_of=lambda p, me=name: _managed_owner(p, managed_outputs, me),
+                resource_sources={k: _repo_rel(v, repo_root) for k, v in resx.items()})
+            entry["csharp"]["target_framework"] = g.prop("TargetFramework")
+            for key, prop in (("runtime_identifier", "RuntimeIdentifier"),
+                              ("root_namespace", "RootNamespace")):
+                if g.prop(prop):
+                    entry["csharp"][key] = g.prop(prop)
+            if g.prop("ProjectAssetsFile"):
+                # What NuGet resolved for this project: the input of nuget_assets.py.
+                entry["csharp"]["assets_file"] = _repo_rel(
+                    _join(g.dir, g.prop("ProjectAssetsFile")), repo_root)
 
     root_file = _root_file(log)
     root = next((p for p in log.projects.values() if p.parent < 0), None)
@@ -1121,6 +1379,10 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
         model.toolchain = {k: v for k, v in {
             "msvc_version": msvc, "platform_toolset": toolset,
             "winsdk_version": sdk, "target_arch": arch}.items() if v}
+    # .NET: the SDK whose compiler ran and the framework reference packs.
+    model.toolchain.update(csc_dialect.dotnet_facts(
+        a.arguments for t in model.targets.values() for a in t.actions
+        if a.mnemonic == "CSharpCompile" and a.arguments))
 
     report = {
         "schema": REPORT_SCHEMA,
@@ -1154,6 +1416,19 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
         },
         "dumper_errors": log.dumper_errors,
     }
+    if computed_csc is not None:
+        # The design-time pass is trusted as far as it reproduces the command
+        # lines of the projects this build DID compile.
+        differing = {n: d for n, d in design_time_checks.items() if d}
+        used = sorted(n for n, e in report_targets.items()
+                      if e["recovered_from"].get("design_time"))
+        report["completeness"]["design_time"] = {
+            "status": ("mismatch" if differing else
+                       "verified" if design_time_checks else "unchecked"),
+            "checked_against_real_compiles": len(design_time_checks),
+            "mismatched": differing,
+            "used_for": used,
+        }
     return model, report
 
 
@@ -1217,6 +1492,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "(default: <binlog>.events.ndjson)")
     parser.add_argument("--no-tlog", action="store_true",
                         help="do not recover skipped compiles from tracking logs")
+    parser.add_argument("--design-time", action="store_true",
+                        help="C#: also run a design-time pass (no compilation) to recover "
+                             "the compiler command line of projects the build skipped as "
+                             "up to date, and cross-check it against those it compiled")
+    parser.add_argument("--design-time-events",
+                        help="event dump of an earlier design-time pass to reuse")
     parser.add_argument("--allow-incomplete", action="store_true",
                         help="exit 0 even if some sources could not be recovered")
     args = parser.parse_args(argv)
@@ -1228,7 +1509,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"replayed {source} with {used} -> {dump}")
         source = dump
 
-    model, report = extract(source, args.repo_root, use_tlogs=not args.no_tlog)
+    design_time = args.design_time_events
+    if args.design_time and not design_time:
+        design_time = os.path.splitext(source)[0] + ".designtime.ndjson"
+        instances = design_time_instances(events.load(source), win_norm(args.repo_root))
+        if instances:
+            events.design_time_compile(instances, design_time, args.msbuild)
+            print(f"design-time pass over {len(instances)} managed project(s) -> {design_time}")
+        else:
+            design_time = None
+
+    model, report = extract(source, args.repo_root, use_tlogs=not args.no_tlog,
+                            design_time=design_time)
     dump_model(model, args.out)
     print(f"wrote {args.out}")
     if args.report:
@@ -1242,6 +1534,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for entry in report["targets"].values():
         recovered.update(entry["recovered_from"])
     print("targets: %d   compile actions: %s" % (len(model.targets), dict(recovered)))
+    checked = completeness.get("design_time")
+    if checked:
+        print("design-time pass: %s (%d project(s) compared with their real compile, %d differ; "
+              "used for %d)" % (checked["status"], checked["checked_against_real_compiles"],
+                                len(checked["mismatched"]), len(checked["used_for"])))
+        for name, fields in sorted(checked["mismatched"].items()):
+            print("  %s differs in: %s" % (name, ", ".join(sorted(fields))))
     if completeness["possibly_stale"]:
         print("WARNING: %d project(s) have commands taken from tracking logs that this build "
               "did not re-check (it stopped before reaching them); they may be stale: %s"

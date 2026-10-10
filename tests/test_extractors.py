@@ -588,6 +588,48 @@ def test_bazel_csharp_sources_come_from_declared_inputs():
     assert (group.language, group.sources) == ("csharp", ("src/Program.cs",))
 
 
+def test_bazel_csharp_tools_of_the_build_itself_are_not_deliverables():
+    # A converter the build runs is compiled for the exec configuration; a
+    # library's reference-only twin is the same compile twice. Neither is an
+    # assembly of the project.
+    leaf_ids = []       # path fragment id of each path's last component
+
+    def fragments(*paths):
+        out, ids = [], {}
+        for path in paths:
+            parent = None
+            for part in path.split("/"):
+                key = (parent, part)
+                if key not in ids:
+                    ids[key] = len(ids) + 1
+                    out.append(dict({"id": ids[key], "label": part},
+                                    **({"parentId": parent} if parent else {})))
+                parent = ids[key]
+            leaf_ids.append(parent)
+        return out
+
+    paths = ["bazel-out/x64_windows-opt-exec-ST-0123456789ab/bin/tools/conv/net8.0/conv.dll",
+             "bazel-out/x64_windows-opt-ST-0123456789ab/bin/src/lib/lib/net8.0/Lib.dll",
+             "bazel-out/x64_windows-opt-ST-0123456789ab/bin/src/lib/lib/net8.0/ref/Lib.dll"]
+    path_fragments = fragments(*paths)
+    aquery = {
+        "artifacts": [{"id": i + 1, "pathFragmentId": f} for i, f in enumerate(leaf_ids)],
+        "pathFragments": path_fragments,
+        "targets": [{"id": 1, "label": "//tools/conv:conv"}, {"id": 2, "label": "//src/lib:lib"}],
+        "depSetOfFiles": [],
+        "actions": [
+            {"mnemonic": "CSharpCompile", "targetId": 1, "outputIds": [1],
+             "arguments": ["wrapper.bat", "dotnet.exe", "csc.dll", "/target:exe", "/out:" + paths[0], "C.cs"]},
+            {"mnemonic": "CSharpCompile", "targetId": 2, "outputIds": [2],
+             "arguments": ["wrapper.bat", "dotnet.exe", "csc.dll", "/target:library", "/out:" + paths[1], "L.cs"]},
+            {"mnemonic": "CSharpCompile", "targetId": 2, "outputIds": [3],
+             "arguments": ["wrapper.bat", "dotnet.exe", "csc.dll", "/refonly", "/out:" + paths[2], "L.cs"]}],
+    }
+    b = _extract_bazel(aquery)
+    assert sorted(b.targets) == ["src/lib:lib"]
+    assert len(b.targets["src/lib:lib"].actions) == 1
+
+
 def test_model_annotations_round_trip_and_stay_out_of_old_models():
     from model import (Action, BuildSystem, CanonicalModel, Dependency, Target,
                        TargetKind, TargetRole)

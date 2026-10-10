@@ -5,8 +5,11 @@ projects). The migration process itself lives in [SKILL.md](../SKILL.md); this
 file only covers what is unique to MSBuild as the reference build.
 
 **Status: new.** C/C++ compile and link parity uses the main loop. C# is
-compared at source-set level and is opt-in. Codegen, packaging and test
-execution are extracted and reported, not diffed. See
+compared per assembly (sources, options, references, analyzers, resources) and
+is opt-in; it has its own guide,
+[REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md), which also covers
+`rules_dotnet` and the WinRT interop chain. Packaging and test execution are
+extracted and reported, not diffed. See
 [what has been exercised](#what-has-been-exercised), the
 [case study](CASE-winget-cli-migration.md), and the working overlays in
 [`examples/winget-cli/`](../examples/winget-cli/) and
@@ -35,9 +38,11 @@ these before proceeding.
 - **Dependencies fetched or built during the build**: NuGet restore, and vcpkg
   running `vcpkg install` from inside MSBuild. Each needs a Bazel-side home
   ([External dependencies](#external-dependencies)).
-- **C#, XAML, MSIX and WiX projects.** C# is source-set parity only; XAML
-  compilation, packaging (`.wapproj`) and installers (`.wixproj`) are listed
-  with role `package` and not migrated.
+- **XAML, MSIX and WiX projects.** XAML compilation (WPF, WinUI), packaging
+  (`.wapproj`) and installers (`.wixproj`) are not migrated: packaging projects
+  are listed with role `package`, and a C# project that compiles XAML is put in
+  its own bucket by the emitter. C# without XAML is in scope
+  ([REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md)).
 - **Projects that consume each other's outputs by path** rather than by
   reference, ordered only by solution-level dependencies. They show up as
   `copy` and `exec` steps, as libraries no project reference explains, and in
@@ -103,7 +108,8 @@ The extractor prints where each compile command came from:
 | `binlog` | the build ran the compiler and logged the command line |
 | `tlog` | the build skipped the source as up to date; the command is the tracking-log entry MSBuild compared against in this build |
 | `tlog_unverified` | from a tracking log, but this build stopped before re-checking the project. **Possibly stale**; rebuild if it matters |
-| `skipped_target` | C# compile skipped as up to date; the source set comes from the target's declared inputs, and there are no flags |
+| `skipped_target` | C# compile skipped as up to date; the source set comes from the target's declared inputs, and there are no flags. Extract with `--design-time` to recover the command line instead |
+| `design_time` | C# compile skipped as up to date; the command line is the one a design-time pass computed, cross-checked against the projects that did compile (`completeness.design_time`) |
 
 It **exits non-zero if any evaluated source has no recovered command** and lists
 them. That is deliberate: a model of part of the build would make everything
@@ -246,7 +252,7 @@ sources, which the reference compiles without it.
 - **`exclude_targets`** is how a partial migration states its scope. List the
   reference targets not attempted yet; `excluded` in the output counts them, so
   a slice can converge without pretending to be the whole build.
-- **`include_csharp`** (default `false`): also diff C# source sets. Leave it off
+- **`include_csharp`** (default `false`): also diff C# assemblies. Leave it off
   while migrating the C++; C# targets are then listed under `excluded`.
 - **`ignore.toolchain`**: toolchain facts (`msvc_version`, `winsdk_version`,
   `target_arch`) a reviewer accepts as differing.
@@ -298,7 +304,8 @@ Kinds specific to this frontend:
 |---|---|
 | `toolchain_diff` | the two builds resolved different MSVC or SDK versions, or architectures. Pin the Bazel toolchain |
 | `tu_variant_count` (warn) | the reference compiles a source with more distinct flag sets than Bazel does (one file built into several projects with different flags). Check that sharing one compile is intended |
-| `missing_cs_src` / `extra_cs_src` | C# source set differs (`include_csharp` only) |
+| `missing_cs_src` / `extra_cs_src` | C# source set of an assembly differs (`include_csharp` only) |
+| `cs_refs_diff`, `cs_analyzers_diff`, `cs_resources_diff` | C# references, analyzers, or resources and compile inputs differ; see the C# guide |
 
 ## External dependencies
 
@@ -487,8 +494,11 @@ On one machine: Bazel 9.2.0, rules_cc 0.2.17, MSVC 14.51.36231, Windows SDK
   CppUnitTest under `bazel test` (same 484 tests, same results as the reference
   DLL).
 
-Not exercised: a whole solution; executables; WinRT component projections
-(`midl /winrt`, `mdmerge`, `cppwinrt -component`); a Catch2 or GoogleTest
-executable under `cc_test`; C# under rules_dotnet; MSIX and WiX packaging;
+C# under rules_dotnet, with `midl /winrt`, `mdmerge` and the C#/WinRT projection,
+is covered in [REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md).
+
+Not exercised: a whole native solution; native executables; the C++/WinRT
+component projection (`cppwinrt -component`); a Catch2 or GoogleTest
+executable under `cc_test`; XAML; MSIX and WiX packaging;
 Debug or ARM64 configurations; `clang-cl`; builds driven by `dotnet build`;
 and anything on Linux beyond the differ's own tests.

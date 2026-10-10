@@ -8,8 +8,13 @@ NuGet and vcpkg) and one native test project of
 18.10, toolset v145 (MSVC 14.51.36231), Windows SDK 10.0.26100.0; Bazel 9.2.0
 with rules_cc 0.2.17 on the same compiler.
 
-**Outcome:** this is a **slice**, not a migration. Three targets are built by
-Bazel from trees that contain no MSBuild output:
+A second pass took the managed code of both repositories through
+`rules_dotnet` 0.22.2 (.NET SDK 10.0.401 in the reference builds, 10.0.400
+under Bazel): all 22 C# compiles of winget-cli and the 199 of PowerToys that
+involve no XAML. That part is section 10.
+
+**Outcome:** on the native side this is a **slice**, not a migration. Three
+targets are built by Bazel from trees that contain no MSBuild output:
 
 | Target | What it exercises | Parity diff | Beyond the diff |
 |---|---|---|---|
@@ -292,12 +297,164 @@ where to put a checkout:
 
 ---
 
+## 10. C#: the reference is the compiler's command line, and rules_dotnet has opinions about it
+
+The second pass took the managed side of both repositories: every C# project of
+winget-cli (22 compiles) and every C# project of PowerToys that does not compile
+XAML or depend on one that does (199 compiles in the reference build), through
+`rules_dotnet` 0.22.2, with the WinRT interop chain they hang off. The method is
+in [REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md); this section is
+what it found.
+
+**A project file does not say what the compiler was given.** winget's
+`Microsoft.Management.Configuration.UnitTests` references the CsWinRT package;
+its compile gets one of that package's two assemblies, because a `.targets`
+file of the repository removes the other for projects that embed the runtime.
+`Microsoft.Win32.Registry` is in thirteen compiles' restore graphs and on none of
+their command lines: the framework already has it (61 packages are displaced
+that way somewhere in winget). 102 PowerToys projects that use WPF or WinForms
+lose up to three assemblies of the base reference pack (`WindowsBase.dll`,
+`System.Drawing.dll`, `Microsoft.VisualBasic.dll`) to the desktop pack. None of that is
+derivable from a `.csproj`; all of it is in the `Csc` task's arguments. So the
+NuGet lock is built from those arguments, and each target's selection from a
+package is its own.
+
+**rules_dotnet decides part of the command line, and five times that part was
+wrong for a project.** In the order they were hit:
+
+1. *Every* assembly of the .NET Framework reference pack is passed (339
+   references where MSBuild passes 221). Two of the extra ones declare a
+   `Microsoft.Windows` namespace, and in winget's PowerShell engine
+   `Windows.Foundation`, written inside `namespace Microsoft.WinGet...`, stopped
+   meaning the Windows one.
+2. `project_sdk = "web"` passes every analyzer of the ASP.NET pack, including a
+   source generator MSBuild runs only on request; the compile fails.
+3. An embedded resource is always named `<assembly>.<path>`. PowerToys names
+   its assemblies `PowerToys.X` and its namespaces `X`; MSBuild names the
+   resource after the namespace, `ResourceManager` asks for that name, and
+   sixteen projects would have compiled and found none of their resources at
+   run time.
+4. The base pack's facade `WindowsBase.dll` is passed next to the desktop
+   pack's real one; `DependencyObject` "claims it is defined in WindowsBase,
+   but it could not be found".
+5. `winexe = True` is accepted and the compile still says `/target:exe`:
+   eleven GUI programs would have opened a console.
+
+The first three are closed by one template, `csc_assembly.bzl`: a compile with
+exactly the reference build's references, analyzers, resource names and
+options, on rules_dotnet's own toolchain, whose result goes back into
+rules_dotnet through `import_library`. 3 of winget's 22 targets and 16 of
+PowerToys' 167 use it. The fourth is closed in the lock (a reference that
+displaces a framework assembly becomes a dependency named like the assembly,
+which is the one case in which rules_dotnet drops its own copy), the fifth by
+stating `/target:winexe` again in `compiler_options`. Nothing in rules_dotnet
+is patched. Items 3 and 5 compile and link cleanly; only the comparison with
+the reference command line shows them.
+
+**A converged diff was wrong three times, and each time the generated files
+said so.** The diff compares command lines, and a command line names a
+generated directory, not what is in it:
+
+- winget prefixes every generated C#/WinRT file with `#pragma warning disable`
+  and compiles the copies, *except* `Module.cs`, which carries an unversioned
+  `SupportedOSPlatform` attribute. The Bazel rule copied all of them. The diff
+  converged; the platform analyzer then rejected every versioned WinRT call.
+- One GUID in one projection was different. `midl`, given the IDL as
+  `a/b/X.idl` instead of `a\b\X.idl`, synthesizes a different IID for one
+  default interface of the configuration API. Same file, same options, same
+  93 references. The assembly compiled. It could not have activated a
+  component built by MSBuild from the same source.
+- One PowerToys projection directory was empty: `cswinrt.exe` writes nothing,
+  and reports nothing, when the output path exceeds `MAX_PATH`, and
+  `<package>/<target>_cswinrt.cs/` repeats a 61-character project name twice.
+  The compile succeeded because that project uses none of it.
+
+`check_generated.py` exists because of the first, found the other two, and
+then found that seven `.resources` files differed by three bytes each (MSBuild
+reads `.resx` with a reader that does not normalize line ends).
+
+**The design-time pass is trustworthy because it is checked.** 14 of winget's
+22 compiles were skipped as up to date in the log that was used first. The
+compile-free second pass recovered all 14 command lines, and for every project
+that *did* compile the two were compared: 22 of 22 equal on winget, 198 of 199
+on PowerToys. The 199th is a test project that links in a WPF window from
+another project, so the real build runs the markup compiler and the design-time
+one does not; it is reported, and it is how that project was recognised as XAML
+at all (its own directory has no `.xaml`; it links one in).
+
+**A machine supplies more than the project restores.** The WindowsDesktop and
+ASP.NET reference packs come from `dotnet\packs`, the .NET Framework reference
+assemblies from the Visual Studio targeting pack even though the NuGet package
+is restored beside them. Each is a copy of a package, so each is locked as that
+package, downloaded by hash, and compared with what the build read: 651 files
+across five packs, all identical. PowerToys' generated analyzer configs carry
+absolute paths into the NuGet cache (the metadata CsWin32 is pointed at) for 17
+projects; restated verbatim, the Bazel build would have read the cache of
+whoever ran the reference.
+
+### Result
+
+| | winget-cli | PowerToys |
+|---|---|---|
+| C# compiles in the reference build | 22 | 199 (non-XAML scope) |
+| Built by Bazel from a tree without MSBuild output | 22 | 167 |
+| ... of them through `csc_assembly` | 3 | 16 |
+| `diff.py` | converged, 0 errors | converged, 0 errors |
+| `check_generated.py` | 54 trees and resource sets, 426 files, identical | 750 trees and resource sets, 867 files, identical |
+| Excluded: compiles XAML | 0 | 1 (found from the log) |
+| Not emitted | 0 | 31 |
+
+The 31 are four projects and their 27 dependents: two reference COM type
+libraries (`<COMReference>`; MSBuild generates the interop assemblies from what
+is registered on the machine), two run CsWin32 as a build task that writes a
+source file, and the rest are tests of those (24 of them UI tests on one
+automation library). Each is listed with its reason in `emit_dotnet.summary.json`.
+
+**Tests.** winget's four managed test assemblies are built and not run: all are
+hosted by VSTest (their generated `Main` is empty, so the emitter writes a
+`csharp_binary`, not a `csharp_test` that would pass without running anything),
+and the three unit-test ones load native code that is not built here.
+
+PowerToys' test projects are MSTest on Microsoft.Testing.Platform, programs that
+run themselves; 69 of the 167 emitted targets are `csharp_test`. Leaving out UI
+tests and fuzzers, 58 unit-test suites were run both ways. The reference build's
+programs run 6,384 tests with no failure. Under `bazel test`:
+
+| | Suites | Tests |
+|---|---|---|
+| Same tests, same results as the reference program | 12 | 1,140 |
+| Run, with failures the reference does not have | 4 | 20 of 510 fail. 14 report "class not registered": they activate PowerToys' native WinRT components, which are not built here. The other 6 are in the DSC suite, in the fixture whose first test fails that way; not looked into further |
+| Cannot be started | 42 | Bazel's Windows test wrapper cannot load the runfiles (26) or reports a path that is too long (12), or the .NET host cannot find a file of its manifest (4) |
+
+The 42 are a property of the layout, not of the build. Every one has a runfiles
+directory path of 250 characters or more; the 16 that start are at 248 or less.
+`<output base>\execroot\_main\bazel-out\<config>\bin\<package>\<target>\<tfm>\<assembly>.dll.bat.runfiles`
+names the project three times, and the longest project names are over 60
+characters. A shorter output base does not buy enough; shorter target names
+would.
+
+Getting the first suite to start took three corrections that no compile and no
+diff shows, each found by running it: MSTest's adapter is not a NuGet asset of
+its package but a `<Reference>` its `.props` add; the rest of its files are
+copied by its `.targets`; and rules_dotnet lets a library's selection of a
+package replace the program's. The run-time closure is now what MSBuild copied
+beside each program, taken from the build's copy steps.
+
+---
+
 ## What is not done
 
-- **38 of winget's 41 targets and all but one PowerToys project.** In
-  particular nothing that needs a WinRT *component* projection (`midl /winrt`,
-  `mdmerge`, `cppwinrt -component`), no executable, no C# project and no
-  packaging project (MSIX, WiX). They are extracted and reported.
+- **Native code beyond the slice**: 15 of winget's 17 native targets and all
+  but one native PowerToys project. In particular nothing that needs the
+  C++/WinRT *component* projection (`cppwinrt -component`), and no native
+  executable. They are extracted and reported.
+- **C#: XAML, packaging, and 31 PowerToys projects** (section 10): four that
+  reference COM type libraries or run CsWin32 as a build task, and their
+  dependents. MSIX and WiX projects are extracted and reported.
+- **Most managed tests under `bazel test`** (section 10): 12 of 58 PowerToys
+  suites match the reference, 4 need native components, 42 cannot be started
+  on Windows for the length of their runfiles path; winget's are VSTest-hosted
+  and need native code.
 - **`AppInstallerCLITests` under `bazel test`** (§7).
 - **Link parity of test binaries.** Compared at compile level only.
 - **Build type.** `/O2 /Oi /GL` and `/LTCG` are not mirrored. The two

@@ -102,6 +102,19 @@ def test_missing_correctness_flag_is_caught():
     assert d.tu == "src/a.cpp"
 
 
+def test_a_default_changed_on_the_bazel_side_is_not_an_extra_flag():
+    # The reference keeps RTTI and the security cookie (it says nothing, or
+    # restates the default). Bazel turning them off is not "one more flag".
+    a = reference(lib("core", msbuild_compile("src", "a.cpp", "/GS", "/W4")))
+    for flag in ("/GR-", "/GS-", "/fp:fast"):
+        b = bazel(lib(":core", bazel_compile("src/a.cpp", "/W4", flag)))
+        (d,) = errors(diff_models(a, b))
+        assert (d.kind, d.cmake_only, d.bazel_only) == ("flags_diff", [], [flag])
+    # A flag that belongs to no such family is still a tolerated extra.
+    b = bazel(lib(":core", bazel_compile("src/a.cpp", "/W4", "/utf-8")))
+    assert errors(diff_models(a, b)) == []
+
+
 def test_runtime_library_mismatch_is_caught_even_when_both_spellings_appear():
     # The Bazel line carries the toolchain's /MD and then the BUILD file's /MT.
     # The compiler honours the last one; so must the diff.
@@ -334,8 +347,9 @@ def test_csharp_is_excluded_until_opted_in():
     assert excluded_summary(a, b, MigrationConfig())["cmake"] == {"csharp": ["Tool"]}
     # ...and is one once C# is in scope.
     cfg = MigrationConfig(include_csharp=True)
-    kinds = sorted(d.kind for d in errors(diff_models(a, b, cfg)))
-    assert kinds == ["missing_cs_src", "missing_target"]
+    (d,) = errors(diff_models(a, b, cfg))
+    # One finding for the missing assembly, not one per source it would compile.
+    assert (d.kind, d.target) == ("missing_target", "Tool")
 
 
 def test_csharp_source_sets_compare_across_groupings_and_ignore_generated_files():

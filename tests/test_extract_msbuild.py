@@ -33,7 +33,8 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import extract_msbuild
-from model import BuildSystem, TargetKind, TargetRole
+import msbuild_events
+from model import Action, BuildSystem, Target, TargetKind, TargetRole
 from serialize import load_model
 
 ROOT = "C:\\work\\proj"
@@ -562,6 +563,156 @@ def test_generated_files_a_compile_read_are_reported_with_their_producer():
         assert "src/lib/Public" not in dead and any(d.endswith("/include") for d in dead)
 
 
+def _design_time_records(root, net8_args, net48_args):
+    """A design-time pass over Tool's two frameworks: the Csc task does not
+    run the compiler, it returns the command line as output items."""
+    tool = root + "\\src\\tool\\Tool.csproj"
+    records = [{"e": "Dump", "schema": 1}]
+    for ctx, tfm, args in ((1, "net8.0", net8_args), (2, "net48", net48_args)):
+        globals_ = {"Configuration": "Release", "Platform": "x64", "TargetFramework": tfm,
+                    "DesignTimeBuild": "true", "SkipCompilerExecution": "true"}
+        records += [
+            {"e": "ProjectStarted", "p": ctx, "ev": ctx, "file": tool, "targets": "Compile",
+             "parent": 0, "global": globals_},
+            {"e": "TargetStarted", "p": ctx, "t": ctx * 10, "name": "CoreCompile"},
+            {"e": "TaskStarted", "p": ctx, "t": ctx * 10, "k": ctx * 100, "name": "Csc"},
+            {"e": "CommandLine", "p": ctx, "t": ctx * 10, "k": ctx * 100, "task": "Csc",
+             "cmd": CSC + " " + " ".join(args)},
+            {"e": "TaskParameter", "p": ctx, "t": ctx * 10, "k": ctx * 100, "kind": "TaskOutput",
+             "name": "CommandLineArgs", "itemType": "CscCommandLineArgs",
+             "items": [{"i": a} for a in args]},
+            {"e": "TaskFinished", "p": ctx, "t": ctx * 10, "k": ctx * 100, "name": "Csc",
+             "succeeded": True},
+        ]
+    records += [
+        {"e": "TargetStarted", "p": 2, "t": 21, "name": "CoreResGen"},
+        {"e": "TaskStarted", "p": 2, "t": 21, "k": 201, "name": "GenerateResource"},
+        {"e": "TaskParameter", "p": 2, "t": 21, "k": 201, "kind": "TaskInput", "name": "Sources",
+         "items": [{"i": "Properties\\Resources.resx"}]},
+        {"e": "TaskParameter", "p": 2, "t": 21, "k": 201, "kind": "TaskInput",
+         "name": "OutputResources", "items": [{"i": "obj\\Release\\net48\\Tool.Properties.Resources.resources"}]},
+        {"e": "TaskFinished", "p": 2, "t": 21, "k": 201, "name": "GenerateResource", "succeeded": True},
+        {"e": "BuildFinished", "succeeded": True},
+    ]
+    return records
+
+
+def _extract_with_design_time(net8_args, net48_args):
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for name, records in (("events.ndjson", _records(ROOT)),
+                              ("designtime.ndjson", _design_time_records(ROOT, net8_args, net48_args))):
+            paths.append(os.path.join(tmp, name))
+            with open(paths[-1], "w", encoding="utf-8", newline="\n") as f:
+                for record in records:
+                    f.write(json.dumps(record) + "\n")
+        return extract_msbuild.extract(paths[0], ROOT, fs=False, design_time=paths[1])
+
+
+NET8_ARGS = ["/noconfig", "/unsafe-", "/define:TRACE;RELEASE", "/out:obj\\Release\\net8.0\\Tool.dll",
+             "/target:exe", "Program.cs", "Util\\Text.cs", "obj\\Release\\net8.0\\Tool.AssemblyInfo.cs"]
+NET48_ARGS = ["/noconfig", "/nowarn:1701,1702,2008", "/define:TRACE;RELEASE;NET48",
+              "/langversion:10", "/out:obj\\Release\\net48\\Tool.exe", "/target:exe",
+              "/resource:obj\\Release\\net48\\Tool.Properties.Resources.resources",
+              "Program.cs", "Util\\Text.cs"]
+
+
+def test_design_time_pass_supplies_the_command_line_of_a_skipped_csharp_compile():
+    model, report = _extract_with_design_time(NET8_ARGS + ["/nowarn:2008"], NET48_ARGS)
+    skipped = model.targets["Tool[net48]"].actions[0]
+    assert skipped.mnemonic == "CSharpCompile" and skipped.arguments[0].endswith("csc.exe")
+    assert "/langversion:10" in skipped.arguments and "/define:TRACE;RELEASE;NET48" in skipped.arguments
+    # The one thing a design-time build adds to every command line is taken out.
+    assert "/nowarn:1701,1702" in skipped.arguments
+    assert not any("2008" in a for a in skipped.arguments)
+    assert report["targets"]["Tool[net48]"]["recovered_from"] == {"design_time": 1}
+    # The compile that really ran keeps its own command line, and is the check
+    # on the pass: computed and real agree, so the computed ones are trusted.
+    assert report["targets"]["Tool[net8.0]"]["recovered_from"] == {"binlog": 1}
+    assert report["completeness"]["design_time"] == {
+        "status": "verified", "checked_against_real_compiles": 1, "mismatched": {},
+        "used_for": ["Tool[net48]"]}
+    # The digest now exists for the skipped compile too, with the .resx behind
+    # the generated resource.
+    digest = report["targets"]["Tool[net48]"]["csharp"]
+    assert digest["options"] == ["/langversion:10.0", "/nowarn:CS1701", "/nowarn:CS1702", "/target:exe"]
+    assert digest["resources"][0]["from"] == "src/tool/Properties/Resources.resx"
+
+
+def test_design_time_pass_that_disagrees_with_a_real_compile_is_reported():
+    wrong = [a for a in NET8_ARGS if a != "Util\\Text.cs"] + ["/define:EXTRA"]
+    _, report = _extract_with_design_time(wrong, NET48_ARGS)
+    check = report["completeness"]["design_time"]
+    assert check["status"] == "mismatch"
+    assert check["mismatched"]["Tool[net8.0]"]["defines"] == {
+        "build_only": [], "design_time_only": ["extra"]}
+    assert check["mismatched"]["Tool[net8.0]"]["sources"]["build_only"] == ["src/tool/util/text.cs"] \
+        or check["mismatched"]["Tool[net8.0]"]["sources"]["build_only"]
+
+
+def test_without_a_design_time_pass_a_skipped_compile_has_sources_only():
+    model, report = _extract()
+    assert model.targets["Tool[net48]"].actions[0].arguments == ()
+    assert report["targets"]["Tool[net48]"]["recovered_from"] == {"skipped_target": 1}
+    assert "design_time" not in report["completeness"]
+    assert "csharp" not in report["targets"]["Tool[net48]"]
+
+
+def test_design_time_project_runs_each_instance_with_its_own_global_properties():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "events.ndjson")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            for record in _records(ROOT):
+                f.write(json.dumps(record) + "\n")
+        instances = extract_msbuild.design_time_instances(msbuild_events.load(path), ROOT)
+    files = sorted((os.path.basename(f), g.get("TargetFramework", "")) for f, g in instances)
+    # One per framework of the multi-targeted project; not the outer build, not
+    # the evaluation another project made just to ask a question.
+    assert ("Tool.csproj", "net8.0") in files and ("Tool.csproj", "net48") in files
+    assert ("Tool.csproj", "") not in files
+    text = msbuild_events.design_time_project(
+        [("C:\\p\\A.csproj", {"Configuration": "Release", "Odd": "a;b $(c) <x>"})])
+    assert 'Projects="C:\\p\\A.csproj"' in text and 'Targets="PrepareResources;Compile"' in text
+    # `;` would end the property and `$(` would be expanded: both are escaped.
+    assert "Odd=a%3Bb %24(c) &lt;x&gt;" in text
+    assert "SkipCompilerExecution=true" in text and "ProvideCommandLineArgs=true" in text
+
+
+def test_winrt_metadata_facts_come_from_midl_and_the_steps_after_it():
+    project = ROOT + "\\src\\Component"
+    sdk = "C:\\Program Files (x86)\\Windows Kits\\10\\References\\10.0.26100.0"
+    midl = Action("Midl", ("midl.exe", "/metadata_dir", sdk + "\\Windows.Foundation.FoundationContract\\4.0.0.0",
+                           "/winrt", "/W1", "/nologo", "/char", "signed", "/env", "x64", "/winmd",
+                           "x64\\Release\\Unmerged\\Api.winmd", "/h", "nul", "/notlb", "/client", "none",
+                           "/target", "NT60", "/nomidl", "@x64\\Release\\Component.vcxproj.midlrt.rsp",
+                           "Api.idl"), cwd=project)
+    target = Target("Component", TargetKind.SHARED, actions=[midl])
+    steps = [
+        {"kind": "write", "file": "src/Component/x64/Release/Component.vcxproj.midlrt.rsp",
+         "lines": ['/reference "%s\\Windows.Foundation.FoundationContract\\4.0.0.0\\Windows.Foundation.FoundationContract.winmd"\r\n'
+                   '/reference "%s\\x64\\Release\\Other\\Other.winmd"' % (sdk, ROOT)]},
+        {"kind": "write", "file": "src/Component/x64/Release/Component.vcxproj.mdmerge.rsp",
+         "lines": ['-v -metadata_dir "%s\\Windows.Foundation.FoundationContract\\4.0.0.0\\." '
+                   '-i "x64\\Release\\Unmerged\\Api.winmd" -o "x64\\Release\\Merged" -partial -n:2' % sdk]},
+        {"kind": "copy", "from": ["src/Component/x64/Release/Merged/My.Component.winmd"],
+         "to": ["x64/Release/Component/My.Component.winmd"]},
+        {"kind": "copy", "from": ["x64/Release/Other/Other.winmd"],
+         "to": ["x64/Release/Component/Other.winmd"]},
+    ]
+    facts = extract_msbuild._winrt_metadata(target, steps, ROOT)
+    assert facts == {
+        "idl": ["src/Component/Api.idl"],
+        "midl_options": ["/W1", "/char", "signed", "/env", "x64", "/target", "NT60"],
+        "namespace_depth": 2,
+        "references": ["x64/Release/Other/Other.winmd"],
+        "winmd": "src/Component/x64/Release/Merged/My.Component.winmd",
+        "copies": ["x64/Release/Component/My.Component.winmd"]}
+    # A classic RPC interface is not WinRT metadata.
+    rpc = Target("Rpc", TargetKind.EXECUTABLE, actions=[Action("Midl", ("midl.exe", "/h", "A.h", "A.idl"),
+                                                                  cwd=project)])
+    assert extract_msbuild._winrt_metadata(rpc, [], ROOT) is None
+
+
 def test_external_file_lists_keep_one_spelling_per_path():
     assert extract_msbuild._one_spelling({"INCLUDE", "include", "lib/Foo.lib", "LIB/FOO.LIB",
                                           "tools/x.exe"}) == ["include", "lib/Foo.lib", "tools/x.exe"]
@@ -580,6 +731,29 @@ def test_tracking_log_paths_outside_the_project_get_their_case_back():
             == "/I..\\Shared\\Utils"
         assert extract_msbuild._restore_token_case("/I..\\SHARED\\UTILS\\", truecase, cwd) \
             == "/I..\\Shared\\Utils\\"
+
+
+def test_winrt_metadata_of_a_project_with_its_intermediates_under_obj_and_several_idl():
+    project = ROOT + "\\src\\Sdk"
+    common = ("/winrt", "/W1", "/nologo", "/char", "signed", "/env", "x64", "/enum_class", "/ns_prefix",
+              "/h", "nul", "/target", "NT60", "/nomidl", "@obj\\x64\\Release\\Sdk.vcxproj.midlrt.rsp")
+    midl = [Action("Midl", ("midl.exe",) + common + ("/winmd", "obj\\x64\\Release\\Unmerged\\%s.winmd" % n,
+                                                      n + ".idl"), cwd=project) for n in ("A", "B")]
+    target = Target("Sdk", TargetKind.SHARED, actions=midl)
+    steps = [
+        {"kind": "write", "file": "src/Sdk/obj/x64/Release/Sdk.vcxproj.mdmerge.rsp",
+         "lines": ['-i "obj\\x64\\Release\\Unmerged" -o "obj\\x64\\Release\\Merged" -partial -n:3']},
+        {"kind": "copy", "from": ["src/Sdk/obj/x64/Release/Merged/My.Sdk.Api.winmd"],
+         "to": ["x64/Release/Sdk/My.Sdk.Api.winmd"]}]
+    facts = extract_msbuild._winrt_metadata(target, steps, ROOT)
+    # The merge directory is relative to the project, wherever the response file is.
+    assert facts["winmd"] == "src/Sdk/obj/x64/Release/Merged/My.Sdk.Api.winmd"
+    assert facts["copies"] == ["x64/Release/Sdk/My.Sdk.Api.winmd"]
+    assert facts["idl"] == ["src/Sdk/A.idl", "src/Sdk/B.idl"]
+    # One set of options for the project, not one per .idl strung together.
+    assert facts["midl_options"] == ["/W1", "/char", "signed", "/env", "x64", "/enum_class",
+                                     "/ns_prefix", "/target", "NT60"]
+    assert "midl_options_vary" not in facts
 
 
 if __name__ == "__main__":

@@ -224,9 +224,38 @@ migration lands on; the MSBuild-specific guidance is in
   libraries. A project's own `/SUBSYSTEM:` in `linkopts` comes later on the
   line and wins.
 
-`rules_dotnet` has not been exercised here. The exploration that preceded the
-MSBuild frontend found versions before 0.17 fail on Bazel 9 and 0.22.2 work;
-that is a pointer, not a tested claim.
+## `rules_dotnet` (C#)
+
+Exercised: 0.22.2 on Bazel 9, Windows, .NET SDK 10.0.400, against winget-cli
+(22 compiles) and PowerToys (167 compiles). The full account, with the
+templates that go around it, is
+[REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md). What to know before
+writing a `csharp_library` by hand:
+
+* **`--enable_runfiles` is required on Windows**; without it a program does not
+  find its own assemblies.
+* **The compile action is `CSharpCompile`, always with a parameter file.**
+  `aquery --include_param_files` has the complete command line. A library with
+  `internals_visible_to` has a second, `/refonly` action.
+* **Defaults that are not csc's**: `/warn:3` (csc: 4), `/nullable:disable`,
+  `/langversion` of the SDK, and it always passes `/unsafe-`, `/checked-`,
+  `/deterministic+`, `/highentropyva+`, `/nowarn:CS1701,CS1702`. State what the
+  reference build has.
+* **Target frameworks have no platform.** `net8.0-windows10.0.26100.0` is
+  `net8.0` plus defines and references you provide. Its NuGet rule drops
+  package assets filed under a framework it does not know; lock what MSBuild
+  resolved instead (`nuget_assets.py` + `nuget_assets.bzl`).
+* **It decides part of the command line, and that part can be wrong for a
+  project**: embedded resources are always named `<assembly>.<path>`; a .NET
+  Framework target gets the whole reference pack; `project_sdk = "web"` gets
+  every analyzer of the ASP.NET pack; `winexe = True` still compiles with
+  `/target:exe`; the base pack's facade `WindowsBase.dll` is passed next to
+  WindowsDesktop's real one. Each has a workaround that does not patch
+  rules_dotnet; for the first three it is `csc_assembly.bzl`, a compile with
+  exactly the reference build's inputs that hands its result back through
+  `import_library`.
+* **`runtimeconfig.json` names `Microsoft.NETCore.App` only.** A program that
+  loads WPF or WinForms does not start as built.
 
 ## `rules_foreign_cc`: not for the code under migration
 

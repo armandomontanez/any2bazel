@@ -36,6 +36,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import canonicalize_csc as csc
 import canonicalize_msvc as msvc
 from canonicalize import canonicalize_flags, canonicalize_link_flags
 from model import (Action, BuildSystem, CanonicalModel, Dependency, Target,
@@ -67,6 +68,9 @@ class CompileGroup:
     sources: Tuple[str, ...] = ()      # sorted, repo-relative
     flags: Tuple[str, ...] = ()        # the action's non-source argv (raw, for now)
     language: str = "java"             # "java" | "csharp": which source set it joins
+    # C# only: the canonical command line (canonicalize_csc.CscView), or None
+    # when the build recorded no command line for this compile.
+    csc: Optional[object] = None
 
 
 @dataclass
@@ -156,27 +160,31 @@ def _java_compile_group(args, repo_root: str) -> "CompileGroup":
 _CSHARP_EXT = ".cs"
 
 
-def _csharp_compile_group(act: Action, repo_root: str, path_map) -> "CompileGroup":
+def _csharp_compile_group(act: Action, repo_root: str, path_map) -> Optional["CompileGroup"]:
     """One csc invocation as a source set. Sources are the `.cs` arguments, or
     the declared inputs when the argv is not available (Bazel passes them in a
     param file; a compile MSBuild skipped as up to date has no argv at all).
     Keyed by the `/out:` assembly. Flags are kept raw, like Java's."""
-    sources, flags = [], []
-    out_key = ""
-    for a in act.arguments:
-        low = a.lower()
-        if low.startswith(("/out:", "-out:")):
-            out_key = msvc.norm_path(a[5:], repo_root, act.cwd, path_map)
-            flags.append(a)
-        elif low.endswith(_CSHARP_EXT) and not a.startswith(("/", "-", "@")):
-            sources.append(msvc.norm_path(a, repo_root, act.cwd, path_map))
-        else:
-            flags.append(a)
-    if not sources:
+    if not act.arguments:
+        # No command line was recorded: only the source set is known.
         sources = [msvc.norm_path(p, repo_root, act.cwd, path_map)
                    for p in act.inputs if p.lower().endswith(_CSHARP_EXT)]
-    return CompileGroup(key=out_key or "<csc>", sources=tuple(sorted(sources)),
-                        flags=tuple(flags), language="csharp")
+        out = next((msvc.norm_path(o, repo_root, act.cwd, path_map) for o in act.outputs
+                    if o.lower().endswith((".dll", ".exe"))), "")
+        return CompileGroup(key=out or "<csc>", sources=tuple(sorted(sources)),
+                            language="csharp")
+    view = csc.parse(act.arguments, repo_root, cwd=act.cwd, path_map=path_map)
+    if view.ref_only:
+        # rules_dotnet compiles a library with InternalsVisibleTo twice; the
+        # reference-only twin is the same command line minus the code.
+        return None
+    sources = list(view.sources) or [msvc.norm_path(p, repo_root, act.cwd, path_map)
+                                     for p in act.inputs if p.lower().endswith(_CSHARP_EXT)]
+    start = csc.compiler_index(act.arguments) + 1
+    flags = tuple(a for a in act.arguments[start:]
+                  if a.startswith(("/", "-")) and not a.lower().endswith(_CSHARP_EXT))
+    return CompileGroup(key=view.out or "<csc>", sources=tuple(sorted(sources)),
+                        flags=flags, language="csharp", csc=view)
 
 
 _LINK_INPUT_LIB_EXTS = (".a", ".lo", ".lib", ".so", ".dylib")
@@ -329,8 +337,9 @@ def reconstruct_target(t: Target, build_system: BuildSystem,
                 _java_compile_group(act.arguments, repo_root))
         elif act.mnemonic in _CSHARP_COMPILE_MNEMONICS:
             # So does C#: one csc invocation per assembly.
-            view.compile_groups.append(
-                _csharp_compile_group(act, repo_root, path_map))
+            group = _csharp_compile_group(act, repo_root, path_map)
+            if group is not None:
+                view.compile_groups.append(group)
     if not view.language and view.compile_groups and not view.tus \
             and all(g.language == "csharp" for g in view.compile_groups):
         view.language = "c#"

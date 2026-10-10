@@ -121,6 +121,17 @@ _STD_PREFIX = "/std:"          # `/std:c++17`, `/std:c11`: last one wins too
 _C_EXTS = (".c",)
 
 
+def default_family(flag: str) -> Optional[str]:
+    """For a canonical flag that states a NON-default state of an option
+    family the compiler has a default for (`/GR-`, `/GS-`, `/WX`, `/fp:fast`):
+    the family. A side that says nothing about the family has the default, so
+    such a flag on one side only is a difference whichever side it is on."""
+    entry = _FAMILY.get(flag)
+    if entry and entry[0] in _FAMILY_DEFAULT:
+        return entry[0]
+    return None
+
+
 def _basename(tok: str) -> str:
     return ntpath.basename(tok.replace("/", "\\")).lower()
 

@@ -32,10 +32,13 @@ extra defines are reported at lower severity.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+import canonicalize_csc as csc_dialect
+import canonicalize_msvc as msvc_dialect
 from canonicalize import BAZEL_TOLERATED_FLAG_PREFIXES
 from config import MigrationConfig
 from model import (BuildSystem, CanonicalModel, TargetKind, TargetRole,
@@ -78,6 +81,9 @@ class Kind(str, Enum):
     # C# (CompileGroup) source-set comparison (only when cfg.include_csharp):
     MISSING_CS_SRC = "missing_cs_src"      # .cs compiled in A but not B
     EXTRA_CS_SRC = "extra_cs_src"          # .cs compiled in B but not A
+    CS_REFS_DIFF = "cs_refs_diff"          # referenced assemblies (and their packages)
+    CS_ANALYZERS_DIFF = "cs_analyzers_diff"  # analyzers / source generators
+    CS_RESOURCES_DIFF = "cs_resources_diff"  # resources, additional files, analyzer configs
     # A source the reference compiles with more distinct flag sets than Bazel:
     TU_VARIANT_COUNT = "tu_variant_count"
     # The two builds resolved different toolchains (compiler / SDK / arch):
@@ -152,6 +158,7 @@ def _diff_tu(target: str, a: TranslationUnit, b: TranslationUnit,
     # Reviewer-approved ignores are dropped from both sides first.
     a_fl = {f for f in a.flags if not cfg.flag_ignored(f)}
     b_fl = {f for f in b.flags if not cfg.flag_ignored(f)}
+    stray = _changed_defaults(a_fl, b_fl, msvc_dialect.default_family)
     if a_fl - b_fl:
         out.append(Discrepancy(
             kind=Kind.FLAGS_DIFF.value,
@@ -161,7 +168,23 @@ def _diff_tu(target: str, a: TranslationUnit, b: TranslationUnit,
             cmake_only=sorted(a_fl - b_fl),
             bazel_only=_display_bazel_only(b_fl - a_fl),
         ))
+    elif stray:
+        out.append(Discrepancy(
+            kind=Kind.FLAGS_DIFF.value, severity=Severity.ERROR.value,
+            target=target, tu=a.source,
+            detail="bazel changes a compiler default the reference keeps",
+            cmake_only=[], bazel_only=stray))
     return out
+
+
+def _changed_defaults(a_flags, b_flags, family_of) -> List[str]:
+    """Bazel-side flags that move a setting off the compiler's default while
+    the reference says nothing about that setting (so it has the default).
+    Extra flags are normally tolerated; these are not extra, they are a
+    different value."""
+    a_families = {family_of(f) for f in a_flags} - {None}
+    return sorted(f for f in b_flags - a_flags
+                  if family_of(f) and family_of(f) not in a_families)
 
 
 def _diff_link_flags(name: str, ta: "TargetView", tb: "TargetView",
@@ -357,6 +380,335 @@ def _is_generated_cs(path: str) -> bool:
             or (len(low) > 1 and low[1] == ":"))
 
 
+_TFM = re.compile(r"^(net\d+\.\d+|net\d{2,3}|netstandard\d\.\d|netcoreapp\d\.\d)(-[a-z]+[\d.]*)?$",
+                  re.IGNORECASE)
+
+
+def _base_tfm(*candidates: str) -> str:
+    """Target framework named by a path component or a `Name[tfm]` suffix,
+    without its platform part: `net8.0-windows10.0.26100.0` is `net8.0`.
+    rules_dotnet has no platform frameworks; the platform shows up in the
+    defines and references instead, which are compared."""
+    for text in candidates:
+        for part in re.split(r"[\\/\[\]|]", text or ""):
+            m = _TFM.match(part.strip())
+            if m:
+                return m.group(1).lower()
+    return ""
+
+
+@dataclass
+class _Assembly:
+    name: str               # assembly name as written
+    tfm: str                # base target framework ('' if unknown)
+    target: str             # the target that compiles it
+    group: object           # reconstruct.CompileGroup
+
+    @property
+    def label(self) -> str:
+        return "%s [%s]" % (self.name, self.tfm) if self.tfm else self.name
+
+
+def _csharp_assemblies(views: Dict[str, TargetView], names) -> Dict[tuple, _Assembly]:
+    out: Dict[tuple, _Assembly] = {}
+    for n in sorted(names):
+        for g in views[n].compile_groups:
+            if g.language != "csharp":
+                continue
+            name = (g.csc.assembly if g.csc is not None else "") or ""
+            if not name and g.key != "<csc>":
+                name = g.key.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            name = name or n.split("[", 1)[0].rsplit(":", 1)[-1]
+            tfm = _base_tfm(g.key, n)
+            out.setdefault((name.lower(), tfm), _Assembly(name, tfm, n, g))
+    return out
+
+
+def _pair_assemblies(a: Dict[tuple, _Assembly], b: Dict[tuple, _Assembly]):
+    """(pairs, only_a, only_b). Exact (name, framework) first; then by name
+    alone where that is unambiguous, so one side not saying its framework
+    does not unpair an assembly."""
+    pairs, used_b = [], set()
+    by_name: Dict[str, List[tuple]] = {}
+    for key in b:
+        by_name.setdefault(key[0], []).append(key)
+    a_by_name: Dict[str, List[tuple]] = {}
+    for key in a:
+        a_by_name.setdefault(key[0], []).append(key)
+    only_a = []
+    for key in sorted(a):
+        if key in b:
+            pairs.append((a[key], b[key])); used_b.add(key)
+        elif len(a_by_name[key[0]]) == 1 and len(by_name.get(key[0], [])) == 1 \
+                and "" in (key[1], by_name[key[0]][0][1]):
+            other = by_name[key[0]][0]
+            pairs.append((a[key], b[other])); used_b.add(other)
+        else:
+            only_a.append(a[key])
+    return pairs, only_a, [b[k] for k in sorted(b) if k not in used_b]
+
+
+_BAZEL_OUT = re.compile(r"^bazel-out/[^/]+/bin/")
+
+
+def _map_cs_source(src: str, cfg: "MigrationConfig") -> str:
+    """`source_dir_map` and `source_map` for a C# source, ignoring case. These
+    are Windows builds: MSBuild spells a directory the way the project file
+    does (`previewpane/Common`), Bazel the way the file system does
+    (`previewpane/common`), and both mean the same file."""
+    src = cfg.map_source_dir(src, fold=True)
+    low = src.lower()
+    best = None
+    for frm, to in cfg.source_map:
+        if low.startswith(frm.lower()) and (best is None or len(frm) > len(best[0])):
+            best = (frm, to)
+    return best[1] if best else src
+
+
+def _option_identity(option: str) -> str:
+    """A compiler option whose value is a file (`/win32manifest:<path>`),
+    compared by which file it is rather than by where each build keeps it."""
+    key, sep, value = option.partition(":")
+    if sep and key.lstrip("/") in csc_dialect.PATH_VALUED:
+        return "%s:%s" % (key, _file_identity(value))
+    return option
+
+
+def _cs_source_key(src: str, cfg: "MigrationConfig") -> Optional[str]:
+    """Comparison key of a C# source, or None if it is a file the build system
+    wrote for itself and no config rule says how the two sides' copies
+    correspond (each build generates its own assembly info; those are checked
+    by content, not by path)."""
+    # rules_dotnet builds each target framework in its own configuration, so a
+    # generated file's directory carries an opaque hash
+    # (`bazel-out/x64_windows-opt-ST-89742bf2ae83/bin/...`). Config rules name
+    # it the way the `bazel-bin` link does.
+    src = _BAZEL_OUT.sub("bazel-bin/", src.replace("\\", "/"))
+    mapped = _map_cs_source(src, cfg)
+    if mapped != src:
+        return mapped.lower()
+    low = src.replace("\\", "/").lower()
+    if low.startswith(("@", "external/", "/")) or (len(low) > 1 and low[1] == ":"):
+        # A source from outside the repository -- shipped in a package, like a
+        # test SDK's entry point: the same file whichever directory each build
+        # keeps its packages in.
+        return "<external>/" + low.rsplit("/", 1)[-1]
+    if _is_generated_cs(src):
+        return None
+    return low
+
+
+def _file_identity(path: str) -> str:
+    """Identity of a non-source compile input (additional file, analyzer
+    config) across builds: its repo path, or just its name when it lives in a
+    package or was generated."""
+    p = path.replace("\\", "/")
+    low = p.lower()
+    generated = low.startswith(("bazel-out/", "obj/")) or "/obj/" in low
+    if generated and low.endswith(".editorconfig"):
+        return "<generated>.editorconfig"
+    if generated or low.startswith(("@", "external/", "/")) or (len(low) > 1 and low[1] == ":"):
+        return low.rsplit("/", 1)[-1]
+    return low
+
+
+def _binary_identities(paths, raw) -> Dict[str, Optional[tuple]]:
+    """assembly file name -> (package id, version) or None, for a reference or
+    analyzer list. `raw` are the same entries as written (package directories
+    are still visible there)."""
+    out: Dict[str, Optional[tuple]] = {}
+    for path, original in zip(paths, raw):
+        out.setdefault(csc_dialect.assembly_identity(path), csc_dialect.package_of(original))
+    return out
+
+
+_PACK_ALIASES = (
+    # The installed .NET Framework targeting pack and the package that copies it.
+    (re.compile(r"^microsoft\.netframework\.referenceassemblies(\.net\d+)?$"),
+     "microsoft.netframework.referenceassemblies"),
+    (re.compile(r"^netstandard\.library(\.ref)?$"), "netstandard.library"),
+)
+
+
+def _pack_family(package_id: str) -> str:
+    """A framework pack's id without what differs between the copy a machine
+    has installed and the package a build downloads."""
+    low = package_id.lower()
+    for pattern, family in _PACK_ALIASES:
+        if pattern.match(low):
+            return family
+    return low
+
+
+def _referenced_twice(paths) -> Dict[str, List[str]]:
+    """assembly file name -> the different files passed under it, for names
+    that were passed more than once."""
+    seen: Dict[str, List[str]] = {}
+    for path in paths:
+        files = seen.setdefault(csc_dialect.assembly_identity(path), [])
+        if path not in files:
+            files.append(path)
+    return {name: files for name, files in seen.items() if len(files) > 1}
+
+
+def _extra_binaries(a_ids, b_ids, by_pack: bool) -> List[str]:
+    """Files only the bazel side passes. With `by_pack`, those of a framework
+    pack are counted per pack instead of listed: a rule set that passes a whole
+    reference pack where MSBuild passes part of it adds a hundred at once."""
+    names: List[str] = []
+    packs: Dict[tuple, int] = {}
+    for name in sorted(set(b_ids) - set(a_ids)):
+        origin = b_ids[name]
+        if by_pack and origin and csc_dialect.is_framework_pack(origin[0]):
+            packs[origin] = packs.get(origin, 0) + 1
+        else:
+            names.append(name)
+    return names + ["%d more assemblies of %s %s" % (count, origin[0], origin[1])
+                    for origin, count in sorted(packs.items())]
+
+
+def _diff_binaries(kind: Kind, what: str, label: str, a_ids, b_ids,
+                   by_pack: bool = False, ambiguous=()) -> List[Discrepancy]:
+    """`ambiguous` are names the bazel side passes from more than one file:
+    reported by the caller, and not asked here which of the files is right."""
+    missing = sorted(set(a_ids) - set(b_ids))
+    wrong = []
+    for name in sorted(set(a_ids) & set(b_ids)):
+        pa, pb = a_ids[name], b_ids[name]
+        if not pa or not pb or name in ambiguous:
+            continue
+        packs = csc_dialect.is_framework_pack(pa[0]) or csc_dialect.is_framework_pack(pb[0])
+        if packs and _pack_family(pa[0]) != _pack_family(pb[0]):
+            # Which pack an assembly comes from is not a version question:
+            # `WindowsBase.dll` of the base pack is a facade, WindowsDesktop's
+            # is the real one.
+            wrong.append("%s: reference takes it from %s, bazel from %s" % (name, pa[0], pb[0]))
+        elif not packs and pa != pb:
+            wrong.append("%s: reference %s %s, bazel %s %s" % (name, pa[0], pa[1], pb[0], pb[1]))
+    extra = _extra_binaries(a_ids, b_ids, by_pack)
+    if not missing and not wrong:
+        if not extra:
+            return []
+        # Neither kind of extra is inert. A reference adds names to bind to (a
+        # second copy of a type makes a call ambiguous, a namespace it declares
+        # can shadow the one the source means); a source generator adds code.
+        return [Discrepancy(kind.value, Severity.WARN.value, label,
+                            "%s only on the bazel side" % what, cmake_only=[],
+                            bazel_only=extra)]
+    show = lambda n: "%s (%s %s)" % (n, *a_ids[n]) if a_ids[n] else n
+    return [Discrepancy(
+        kind.value, Severity.ERROR.value, label,
+        "%s missing on the bazel side, or taken from a different package version" % what,
+        cmake_only=[show(n) for n in missing] + wrong, bazel_only=extra)]
+
+
+def _diff_assembly(a: _Assembly, b: _Assembly, cfg: "MigrationConfig") -> List[Discrepancy]:
+    out: List[Discrepancy] = []
+    label = a.label
+    # sources
+    a_src = {k: s for s in a.group.sources for k in [_cs_source_key(s, cfg)] if k}
+    b_src = {k: s for s in b.group.sources for k in [_cs_source_key(s, cfg)] if k}
+    for key in sorted(set(a_src) - set(b_src)):
+        out.append(Discrepancy(Kind.MISSING_CS_SRC.value, Severity.ERROR.value, label,
+                               "C# source compiled into this assembly in the reference "
+                               "but not in bazel", tu=a_src[key]))
+    for key in sorted(set(b_src) - set(a_src)):
+        out.append(Discrepancy(Kind.EXTRA_CS_SRC.value, Severity.WARN.value, label,
+                               "C# source compiled into this assembly in bazel but not "
+                               "in the reference", tu=b_src[key]))
+    unpaired = sorted(s for s in a.group.sources if _cs_source_key(s, cfg) is None)
+    if unpaired:
+        # Not an error (the bazel build writes its own), but not nothing: an
+        # assembly-info file carries attributes, a projection carries types.
+        out.append(Discrepancy(
+            Kind.MISSING_CS_SRC.value, Severity.WARN.value, label,
+            "generated C# sources of the reference build that no source_map rule pairs "
+            "with a bazel file: not compared", cmake_only=unpaired, bazel_only=[]))
+    va, vb = a.group.csc, b.group.csc
+    if va is None or vb is None:
+        side = "reference" if va is None else "bazel"
+        out.append(Discrepancy(
+            Kind.FLAGS_DIFF.value, Severity.WARN.value, label,
+            "the %s build recorded no compiler command line for this assembly, so only "
+            "its source set was compared" % side))
+        return out
+    # defines
+    a_def = {d for d in va.defines if not cfg.define_ignored(d)}
+    b_def = {d for d in vb.defines if not cfg.define_ignored(d)}
+    if a_def - b_def:
+        out.append(Discrepancy(Kind.DEFINES_DIFF.value, Severity.ERROR.value, label,
+                               "defines missing on the bazel side",
+                               cmake_only=sorted(a_def - b_def), bazel_only=sorted(b_def - a_def)))
+    elif b_def - a_def:
+        out.append(Discrepancy(Kind.DEFINES_DIFF.value, Severity.WARN.value, label,
+                               "defines only on the bazel side", cmake_only=[],
+                               bazel_only=sorted(b_def - a_def)))
+    # options
+    a_opt = {_option_identity(o) for o in va.options if not cfg.flag_ignored(o)}
+    b_opt = {_option_identity(o) for o in vb.options if not cfg.flag_ignored(o)}
+    stray = _changed_defaults(a_opt, b_opt, csc_dialect.default_family)
+    if a_opt - b_opt:
+        out.append(Discrepancy(Kind.FLAGS_DIFF.value, Severity.ERROR.value, label,
+                               "compiler options missing on the bazel side",
+                               cmake_only=sorted(a_opt - b_opt), bazel_only=sorted(b_opt - a_opt)))
+    elif stray:
+        out.append(Discrepancy(Kind.FLAGS_DIFF.value, Severity.ERROR.value, label,
+                               "bazel changes a compiler default the reference keeps",
+                               cmake_only=[], bazel_only=stray))
+    # references and analyzers
+    # The same assembly name from two files: the compiler binds the name to
+    # one of them, and it need not be the one the reference build passed
+    # (a framework's facade `WindowsBase.dll` next to the real one).
+    twice = _referenced_twice(vb.references)
+    for name in set(_referenced_twice(va.references)):
+        twice.pop(name, None)
+    out.extend(_diff_binaries(Kind.CS_REFS_DIFF, "references", label,
+                              _binary_identities(va.references, va.raw_references),
+                              _binary_identities(vb.references, vb.raw_references),
+                              by_pack=True, ambiguous=twice))
+    for name in sorted(twice):
+        out.append(Discrepancy(
+            Kind.CS_REFS_DIFF.value, Severity.ERROR.value, label,
+            "bazel passes two different files for one assembly name; the reference "
+            "build passes one", cmake_only=[], bazel_only=[name] + sorted(twice[name])))
+    out.extend(_diff_binaries(Kind.CS_ANALYZERS_DIFF, "analyzers or source generators", label,
+                              _binary_identities(va.analyzers, va.raw_analyzers),
+                              _binary_identities(vb.analyzers, vb.raw_analyzers)))
+    # resources and the other files that steer the compile
+    def inputs(v):
+        return ({"resource:" + name for name, _ in v.resources}
+                | {"additionalfile:" + _file_identity(p) for p in v.additional_files}
+                | {"analyzerconfig:" + _file_identity(p) for p in v.analyzer_configs})
+    a_in, b_in = inputs(va), inputs(vb)
+    if a_in - b_in:
+        out.append(Discrepancy(Kind.CS_RESOURCES_DIFF.value, Severity.ERROR.value, label,
+                               "embedded resources, additional files or analyzer configs "
+                               "missing on the bazel side",
+                               cmake_only=sorted(a_in - b_in), bazel_only=sorted(b_in - a_in)))
+    return out
+
+
+def _diff_csharp(a_views: Dict[str, TargetView], b_views: Dict[str, TargetView],
+                 cfg: "MigrationConfig") -> List[Discrepancy]:
+    roles = set(PARTICIPATING_ROLES) | ({TargetRole.TEST} if cfg.include_tests else set())
+    a_names = {n for n, t in a_views.items() if t.role in roles and not cfg.target_excluded(n)}
+    # A test is not always a test rule on the bazel side, and the pairing is
+    # by assembly, so every bazel C# compile is a candidate.
+    b_names = {n for n in b_views if not cfg.target_excluded(n)}
+    pairs, only_a, only_b = _pair_assemblies(_csharp_assemblies(a_views, a_names),
+                                             _csharp_assemblies(b_views, b_names))
+    out: List[Discrepancy] = []
+    for asm in only_a:
+        out.append(Discrepancy(Kind.MISSING_TARGET.value, Severity.ERROR.value, asm.label,
+                               "C# assembly in the reference but not bazel"))
+    for asm in only_b:
+        out.append(Discrepancy(Kind.EXTRA_TARGET.value, Severity.WARN.value, asm.label,
+                               "C# assembly in bazel but not the reference"))
+    for a, b in pairs:
+        out.extend(_diff_assembly(a, b, cfg))
+    return out
+
+
 def _union_csharp_sources(views: Dict[str, TargetView], names) -> Dict[str, str]:
     """Pool every hand-written C# source across the given targets: lower-cased
     repo-relative path -> path as written. Same idea as Java -- the SOURCE SET
@@ -412,8 +764,10 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
         if ta is not None and tb is not None and ta.role == TargetRole.TEST \
                 and tb.role == TargetRole.PRODUCTION:
             tb.role = TargetRole.TEST
-    a_names = _participating(a_views, cfg)
-    b_names = _participating(b_views, cfg)
+    # C# targets are paired by assembly and compared on their own (_diff_csharp);
+    # the native alignment below would only report them a second time.
+    a_names = {n for n in _participating(a_views, cfg) if a_views[n].language != "c#"}
+    b_names = {n for n in _participating(b_views, cfg) if b_views[n].language != "c#"}
 
     # Windows builds: the same file can be spelled with different case on the
     # two sides (and tracking logs upper-case everything), so paths compare
@@ -532,21 +886,13 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
                                "<java>", "java source compiled in B but not A",
                                tu=b_java[key]))
 
-    # ---- C#: project-wide source-SET comparison (opt-in) -------------------
-    # Same shape as Java: csc compiles an assembly's whole source set at once,
-    # so the hand-written sources are pooled and the sets compared. Flags and
-    # references are not compared yet.
+    # ---- C#: per-assembly comparison (opt-in) ------------------------------
+    # One csc invocation builds one assembly, and an assembly is a deliverable
+    # (its name is what other code references), so assemblies are paired by
+    # name and target framework and compared one to one: sources, defines,
+    # options, references, analyzers, resources.
     if cfg.include_csharp:
-        a_cs = _union_csharp_sources(a_views, a_names)
-        b_cs = _union_csharp_sources(b_views, b_names)
-        for key in sorted(set(a_cs) - set(b_cs)):
-            out.append(Discrepancy(Kind.MISSING_CS_SRC.value, Severity.ERROR.value,
-                                   "<csharp>", "C# source compiled in A but not B",
-                                   tu=a_cs[key]))
-        for key in sorted(set(b_cs) - set(a_cs)):
-            out.append(Discrepancy(Kind.EXTRA_CS_SRC.value, Severity.WARN.value,
-                                   "<csharp>", "C# source compiled in B but not A",
-                                   tu=b_cs[key]))
+        out.extend(_diff_csharp(a_views, b_views, cfg))
 
     # ---- link closure: EXTERNAL deps only ----------------------------------
     # Internal (in-project) dep names are meaningless once libraries are
@@ -584,21 +930,34 @@ def diff_models(a: CanonicalModel, b: CanonicalModel,
 _TOOLCHAIN_KEYS = ("msvc_version", "winsdk_version", "target_arch")
 
 
+# .NET facts: the SDK whose compiler ran (`dotnet_sdk_version`) and the version
+# of each framework reference pack (`pack:<id>`). Checked only with C# in scope.
+_DOTNET_KEY_PREFIXES = ("dotnet_", "pack:")
+
+
 def _diff_toolchain(a: CanonicalModel, b: CanonicalModel,
                     cfg: "MigrationConfig") -> List[Discrepancy]:
     if not a.toolchain:
         return []
+    out: List[Discrepancy] = []
+    # native
     wanted = [k for k in _TOOLCHAIN_KEYS
               if a.toolchain.get(k) and k not in cfg.ignore_toolchain]
-    if not wanted:
-        return []
-    if not any(b.toolchain.get(k) for k in _TOOLCHAIN_KEYS):
-        return [Discrepancy(
-            Kind.TOOLCHAIN_DIFF.value, Severity.WARN.value, "<toolchain>",
-            "the bazel model records no toolchain (no MSVC compile action in the "
-            "aquery?), so it cannot be checked against the reference",
-            cmake_only=["%s=%s" % (k, a.toolchain[k]) for k in wanted])]
-    out: List[Discrepancy] = []
+    if wanted and not any(b.toolchain.get(k) for k in _TOOLCHAIN_KEYS):
+        # A C#-only bazel slice has no MSVC action; that is not a finding.
+        if not any(k.startswith(_DOTNET_KEY_PREFIXES) for k in b.toolchain):
+            out.append(Discrepancy(
+                Kind.TOOLCHAIN_DIFF.value, Severity.WARN.value, "<toolchain>",
+                "the bazel model records no toolchain (no MSVC compile action in the "
+                "aquery?), so it cannot be checked against the reference",
+                cmake_only=["%s=%s" % (k, a.toolchain[k]) for k in wanted]))
+        wanted = []
+    # .NET: a fact is compared when both builds have it. A pack only the
+    # reference uses shows up as missing references, not here.
+    if cfg.include_csharp:
+        wanted += sorted(k for k in a.toolchain
+                         if k.startswith(_DOTNET_KEY_PREFIXES) and b.toolchain.get(k)
+                         and k not in cfg.ignore_toolchain)
     for k in wanted:
         ours, theirs = a.toolchain[k], b.toolchain.get(k, "")
         if ours.lower() != theirs.lower():
@@ -637,10 +996,10 @@ def _diff_tests(a_views: Dict[str, TargetView], b_views: Dict[str, TargetView],
     out: List[Discrepancy] = []
     a_tests = {n for n, t in a_views.items()
                if t.role == TargetRole.TEST and not cfg.target_excluded(n)
-               and not _out_of_scope_language(t, cfg)}
+               and t.language != "c#"}
     b_tests = {n for n, t in b_views.items()
                if t.role == TargetRole.TEST and not cfg.target_excluded(n)
-               and not _out_of_scope_language(t, cfg)}
+               and t.language != "c#"}
     show = (lambda key, tu: tu.source) if fold else (lambda key, tu: key)
 
     # 1. test-source TU-set union

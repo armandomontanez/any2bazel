@@ -95,6 +95,13 @@ class MigrationConfig:
     # Unlike include_map, the token REPLACES the whole path (the remainder is
     # dropped) so N generated files collapse to 1 -- see map_source().
     source_map: tuple = ()  # tuple of (from_prefix, to_token)
+    # Source-DIRECTORY rewrites: (from_prefix, to_prefix) pairs that keep the
+    # remainder of the path, like include_map does. For a tree of generated
+    # sources that both builds list file by file under different roots (a
+    # CsWinRT projection under `obj/.../Generated Files/CsWinRT/` in MSBuild and
+    # under `bazel-out/` in Bazel): each file still has to be present on the
+    # other side. Applied before source_map; longest from-prefix wins.
+    source_dir_map: tuple = ()
     # CMake target names to drop entirely from the diff: third-party/vendored
     # code Bazel pulls as an external module, or tooling out of migration scope.
     # Unlike `ignore` (flags/defines), this is the only lever for missing_tu /
@@ -148,7 +155,8 @@ class MigrationConfig:
         best = None
         probe = include.lower() if fold else include
         for frm, to in self.include_map:
-            if probe.startswith(frm.lower() if fold else frm)                     and (best is None or len(frm) > len(best[0])):
+            matches = probe.startswith(frm.lower() if fold else frm)
+            if matches and (best is None or len(frm) > len(best[0])):
                 best = (frm, to)
         if best is None:
             return include
@@ -166,11 +174,26 @@ class MigrationConfig:
         single CMake mocs_compilation.cpp bundle both become the one token, so
         the two sides' TU sets reconcile. (An appending map could never collapse
         N files to 1.)"""
+        source = self.map_source_dir(source)
         best = None
         for frm, to in self.source_map:
             if source.startswith(frm) and (best is None or len(frm) > len(best[0])):
                 best = (frm, to)
         return best[1] if best else source
+
+    def map_source_dir(self, source: str, fold: bool = False) -> str:
+        """Apply source_dir_map prefix rewrites (longest from-prefix wins),
+        keeping the rest of the path. Returns the source unchanged if no rule
+        matches. `fold` matches the prefix case-insensitively."""
+        best = None
+        probe = source.lower() if fold else source
+        for frm, to in self.source_dir_map:
+            matches = probe.startswith(frm.lower() if fold else frm)
+            if matches and (best is None or len(frm) > len(best[0])):
+                best = (frm, to)
+        if best is None:
+            return source
+        return best[1] + source[len(best[0]):]
 
     def include_ignored(self, include: str, fold: bool = False) -> bool:
         if fold:
@@ -202,6 +225,8 @@ def load(path: str) -> MigrationConfig:
             (e["from"], e["to"]) for e in ig.get("include_map", [])),
         source_map=tuple(
             (e["from"], e["to"]) for e in ig.get("source_map", [])),
+        source_dir_map=tuple(
+            (e["from"], e["to"]) for e in ig.get("source_dir_map", [])),
         exclude_targets=set(obj.get("exclude_targets", [])),
         bazel_args=tuple(obj.get("bazel_args", [])),
         include_tests=bool(obj.get("include_tests", False)),
