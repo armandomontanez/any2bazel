@@ -13,6 +13,11 @@ A second pass took the managed code of both repositories through
 under Bazel): all 22 C# compiles of winget-cli and the 199 of PowerToys that
 involve no XAML. That part is section 10.
 
+A third pass took a 33-project slice of PowerToys all the way to programs that
+start: 17 native projects through an emitter (the runner, module DLLs,
+C++/WinRT components), WinUI 3 and WPF XAML, resource indexes, and the
+directory each program runs from. That part is section 11.
+
 **Outcome:** on the native side this is a **slice**, not a migration. Three
 targets are built by Bazel from trees that contain no MSBuild output:
 
@@ -442,15 +447,108 @@ beside each program, taken from the build's copy steps.
 
 ---
 
+## 11. Programs: what has to be true before a window opens
+
+The third pass chose its scope by what a person can start: PowerToys' Hosts
+editor and Color Picker (WinUI 3), the FancyZones editor and the Workspaces
+launcher (WPF), the runner and a native utility, and the closure of what they
+reference. 33 projects of 353. BUILD files came from two emitters
+(`emit_cc.py`, `emit_dotnet.py`); the guides are
+[REFERENCE-msbuild.md](REFERENCE-msbuild.md#the-native-emitter) and
+[REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md), and the failures are
+indexed by message in the
+[playbook](REFERENCE-msbuild-playbook.md#symptom-index). What follows is the
+part no log states.
+
+**The environment is an input, and it leaks.** `rc` and the compiler search
+the `INCLUDE` variable after their `/I` directories. PowerToys' variable has
+an entry that is the *name of a property* (`PreventSdkUapPropsAssignment`),
+a relative path that exists nowhere. Sources include
+`../../../common/version/version.h` from a directory three levels deep, and
+it resolves only because that entry gives the path one more level to climb.
+No command line shows it; the report now lists such entries.
+
+**A library can hide a system library, and another can carry it.**
+`#pragma comment(lib, "version.lib")` asks for the SDK's library. PowerToys
+has a project that produces `Version.lib`; with it on the link line the linker
+considers the request met. The reference links anyway, because a third
+project's `<Lib><AdditionalDependencies>` had the librarian copy the SDK's
+import library into a static library. Three wrong theories preceded that
+finding; replaying the reference link and exchanging one library at a time is
+what found it.
+
+**Compiling without the precompiled header is another build.** With `/Yu` the
+compiler never opens `pch.h`. Without it, `#include "pch.h"` is looked up
+beside the source: a source one project borrows from another gets the other
+project's header, and a generated source in an output directory gets none.
+rules_cc has no `/Yc`; the emitted targets use a rule for it.
+
+**The XAML compiler's input has rules nobody wrote down.** It is the same
+compiler as a task and as a program, and the program writes what the task
+writes, byte for byte, once three things hold: a list MSBuild did not pass is
+`null` (empty, pass 1 indexes into it), the working directory is the
+project's, and references come in MSBuild's order (the type table is numbered
+as types are met). Each was found by running the program by hand against the
+reference build's own files before any rule existed.
+
+**A WinUI program does not run without a file no project lists.** Strings,
+images and the compiled markup itself are found through `<Program>.pri`.
+MSBuild builds one at the end of every project with resources, 46 of them in
+PowerToys without a line of XAML.
+
+**WPF's compiler is a library, and MSBuild builds a project you did not
+write.** The markup compiler exists only as task classes; they are hosted in a
+small program. For the pass in between, MSBuild generates a temporary project
+(`<Project>_<random>_wpftmp`) and runs some of the real project's generators
+there, so the real project's log says they were up to date.
+
+**The second program into a directory logs two copies.** PowerToys builds
+every WinUI program into `WinUI3Apps`. MSBuild's copy-if-newer target declares
+inputs and outputs, so its Copy task is handed only what is not there yet: 291
+files for the first program, 2 for the second. The second program, built by
+Bazel from that log, ended at startup for want of
+`Microsoft.WindowsAppRuntime.dll`. The complete list is in the log as the
+items a target computed, and the extractor now reads it. A clean build of the
+whole product would have had the same hole for every program but the first.
+
+**"It works" is what the reference program does.** The FancyZones editor,
+started alone, shows an error dialog in both builds. Color Picker shows
+nothing in either until its shortcut is pressed. Only the Hosts editor simply
+opens a window.
+
+**An example can build only where it was made.** The overlay shipped without
+ten generated files it needs: the emitters had copied them into the clone it
+was verified in, and PowerToys' own `.gitignore` kept them out of the listing
+the overlay was assembled from. Verification now starts by deleting them.
+
+### Result
+
+| | |
+|---|---|
+| Emitted and built from a tree without MSBuild output | 17 of 17 C++ projects, 16 of 16 C# projects (two temporary WPF projects excluded) |
+| `diff.py` | converged, 0 errors, 20 warnings (defines rules_dotnet adds; sources of the intermediate XAML assemblies) |
+| `check_outputs.py` | XAML compiler output of 6 projects, 4 resource indexes, exports, imports and resources of 8 binaries: same |
+| Programs | Hosts and the Workspaces launcher open their windows; Color Picker shows its picker when activated; the FancyZones editor shows the reference's dialog |
+| Negative controls | 5 of 5 reported |
+| Copied from the reference tree | 10 files of project-specific generators, and two COM interop assemblies |
+
+The overlay is [`examples/powertoys/workspace-ui/`](../examples/powertoys/workspace-ui/),
+described in [README-ui.md](../examples/powertoys/README-ui.md). Which of the
+templates it needed should be shared code is in
+[FUTURE-windows-bazel-modules.md](FUTURE-windows-bazel-modules.md).
+
+---
+
 ## What is not done
 
-- **Native code beyond the slice**: 15 of winget's 17 native targets and all
-  but one native PowerToys project. In particular nothing that needs the
-  C++/WinRT *component* projection (`cppwinrt -component`), and no native
-  executable. They are extracted and reported.
-- **C#: XAML, packaging, and 31 PowerToys projects** (section 10): four that
-  reference COM type libraries or run CsWin32 as a build task, and their
-  dependents. MSIX and WiX projects are extracted and reported.
+- **Native code beyond the slices**: 15 of winget's 17 native targets and 93 of
+  PowerToys' 110 native projects. They are extracted and reported.
+- **The product.** PowerToys' runner is built and has not been started: the
+  directory it loads modules from is not assembled.
+- **C#: the other 20 WinUI projects of PowerToys** (Settings among them),
+  **packaging, and 31 PowerToys projects** (section 10): four that reference
+  COM type libraries or run CsWin32 as a build task, and their dependents.
+  MSIX and WiX projects are extracted and reported.
 - **Most managed tests under `bazel test`** (section 10): 12 of 58 PowerToys
   suites match the reference, 4 need native components, 42 cannot be started
   on Windows for the length of their runfiles path; winget's are VSTest-hosted
@@ -460,8 +558,9 @@ beside each program, taken from the build's copy steps.
 - **Build type.** `/O2 /Oi /GL` and `/LTCG` are not mirrored. The two
   `winrtact.dll` builds differ in one imported API set
   (`api-ms-win-crt-math`).
-- **Precompiled headers.** rules_cc has none for MSVC; every source parses
-  `pch.h` itself.
+- **Precompiled headers in the first pass's three targets.** rules_cc has none
+  for MSVC and those targets compile without one; the emitted targets of
+  section 11 use `pch.bzl`.
 - **Hermeticity.** The compiler, SDK, vcpkg and vstest are the host's, pinned by
   version and checked, not downloaded. vcpkg runs in a repository rule.
 - **`version_gen.h` restates `src/Version.props`** in a BUILD file. MSBuild also

@@ -217,7 +217,7 @@ Match the marker files at the repo root against the *Detect via* column of
 | Frontend | Detect via | Reference source | Diffs | Status | Guide |
 |----------|------------|------------------|-------|--------|-------|
 | **CMake** | `CMakeLists.txt` | File API codemodel-v2 | C/C++ compile + link parity | **Mature** — the validated path | [REFERENCE-cmake.md](docs/REFERENCE-cmake.md) |
-| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs; a design-time pass for C# | C/C++ compile + link parity (MSVC dialect); C# per-assembly parity with `rules_dotnet` (opt-in); XAML (WinUI 3, WPF), resource indexes and native binaries compared by output (`check_outputs.py`) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md), [C#](docs/REFERENCE-msbuild-csharp.md), [XAML](docs/REFERENCE-msbuild-xaml.md) |
+| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs; a design-time pass for C# | C/C++ compile + link parity (MSVC dialect); C# per-assembly parity with `rules_dotnet` (opt-in); XAML (WinUI 3, WPF), resource indexes and native binaries compared by output (`check_outputs.py`) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md), [C#](docs/REFERENCE-msbuild-csharp.md), [XAML](docs/REFERENCE-msbuild-xaml.md); order of work and a symptom index in the [playbook](docs/REFERENCE-msbuild-playbook.md) |
 | **Maven** | `pom.xml` | forked `javac` argfiles | Java source-set parity | **Early** — argv-floor only | [REFERENCE-maven.md](docs/REFERENCE-maven.md) |
 | **VSCode / npm** | `package.json` driving gulp/esbuild/tsc | esbuild/tsc/`child_process` instrumentation | standalone TS emit check | **Experimental** — not wired into the main loop | [REFERENCE-npm.md](docs/REFERENCE-npm.md) |
 
@@ -378,6 +378,10 @@ correctness flags).
 | `test_binary_count` | (tests on, warning) differing number of test executables — investigate which side has the extra/missing binary |
 
 Kinds specific to a reference build system are listed in its reference guide.
+For MSBuild, failures that are not diff kinds (a compiler, linker or XAML tool
+error, a program that does not start) are indexed by message in
+[docs/REFERENCE-msbuild-playbook.md](docs/REFERENCE-msbuild-playbook.md#symptom-index):
+look the message up there before changing a BUILD file.
 
 #### Repeat
 

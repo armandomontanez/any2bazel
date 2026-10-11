@@ -10,7 +10,8 @@ Exercised on winget-cli (22 C# compiles) and PowerToys (199 non-XAML C#
 compiles). Numbers and open ends are at the [end](#what-has-been-exercised).
 Projects that compile XAML (WinUI 3, WPF), resource indexes and programs that
 run from their own directory are in
-[REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md).
+[REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md). Failures are indexed by
+message in the [playbook](REFERENCE-msbuild-playbook.md#symptom-index).
 
 ## The loop
 

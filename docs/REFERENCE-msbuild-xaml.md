@@ -5,6 +5,8 @@ a markup compiler that writes code, a second compile, and for WinUI a resource
 index the program cannot start without. This guide covers those steps and the
 directory a program runs from. Everything else (the report, the lock, how C# is
 compared) is in [REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md).
+When a step fails, look its message up in the
+[playbook](REFERENCE-msbuild-playbook.md#symptom-index) first.
 
 ```bash
 # After the usual extraction and lock, with the templates in the workspace:

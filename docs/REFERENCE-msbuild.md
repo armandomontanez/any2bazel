@@ -15,6 +15,12 @@ extracted and reported, not diffed. See
 [`examples/winget-cli/`](../examples/winget-cli/) and
 [`examples/powertoys/`](../examples/powertoys/).
 
+Two companions to read with it:
+[REFERENCE-msbuild-playbook.md](REFERENCE-msbuild-playbook.md) has the order
+of work that held up, the methods for getting unstuck, and an index of
+failures by message; XAML, resource indexes and programs that start are in
+[REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md).
+
 ## Detecting it
 
 A `.sln` or `.slnx` at or near the repo root, with `.vcxproj` and/or `.csproj`
@@ -343,7 +349,9 @@ and [`examples/powertoys/workspace/bazel/`](../examples/powertoys/workspace/baze
 | `layout.bzl` | the shared output directory: files of many targets under the names the reference build gave them, runnable with `bazel run` |
 | `vstest.bzl` | the CI step that runs a test DLL |
 
-Copy and adapt them; they are templates, not a library.
+Copy and adapt them; they are templates, not a library. Which of them should
+be one, and what exists already, is in
+[FUTURE-windows-bazel-modules.md](FUTURE-windows-bazel-modules.md).
 
 NuGet facts are read from what restore left on disk: `integrity` is NuGet's own
 SHA-512 in the form Bazel's `integrity` attribute takes, and `source` is the feed
@@ -485,6 +493,10 @@ switches the default library the link pulls in.
 **Resources.** rules_cc has no resource compiler. A project's `.rc` files
 (`other_actions: ResourceCompile`) become `.res` link inputs through a rule such
 as `rc.bzl`; without one the binary links fine and has no version information.
+(Bazel ships a `windows_resources` rule of its own in
+`@bazel_tools//tools/res:win_res.bzl`. It gives `rc` no defines, include
+directories or options, and a project's resource scripts usually need all
+three; it was not used here.)
 
 **Linking.** Project references to static libraries link transitively. A DLL
 project usually also has a `.def` file, embedded resources, a manifest and
@@ -600,19 +612,19 @@ On one machine: Bazel 9.2.0, rules_cc 0.2.17, MSVC 14.51.36231, Windows SDK
   CppUnitTest under `bazel test` (same 484 tests, same results as the reference
   DLL).
 
-- **The native emitter**, on a 31-project slice of PowerToys (the runner, a
-  WinUI app, two WPF apps, a native utility and what they reference): all 16
+- **The native emitter**, on a 33-project slice of PowerToys (the runner, two
+  WinUI apps, two WPF apps, a native utility and what they reference): all 17
   C++ projects emitted and built, among them the runner (`PowerToys.exe`),
   three module DLLs and three C++/WinRT components. The slice converges with 0
   errors, C# included, and `check_outputs.py` finds the same exports, imported
-  functions and resources in all 7 binaries.
+  functions and resources in all 8 binaries.
 
 C# under rules_dotnet, with `midl /winrt`, `mdmerge` and the C#/WinRT projection,
 is covered in [REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md); XAML
 (WinUI 3 and WPF), resource indexes and runnable program directories in
 [REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md).
 
-Not exercised: a whole native solution (the emitter has seen 16 projects of
+Not exercised: a whole native solution (the emitter has seen 17 projects of
 PowerToys' 110); a Catch2 or GoogleTest executable under `cc_test`; C++ XAML;
 MSIX and WiX packaging; Debug or ARM64 configurations; `clang-cl`; builds
 driven by `dotnet build`; and anything on Linux beyond the differ's own tests.

@@ -61,6 +61,7 @@ Ranges, not recommendations. "Declared" is what a `MODULE.bazel` asked for;
 |---|---|---|---|---|
 | `rules_cc` | 0.0.16 – 0.2.22 | 0.2.14 – 0.2.22 | Dolphin; fmt, spdlog, TinyXML2, zlib; BoringSSL, Abseil, RE2 | Dolphin: `//...` green in 3 configurations, 1350 tests pass, action-graph parity 0 errors. Build re-verified green at declared 0.0.16 / 0.1.1 / 0.2.22; `compatibility_level = 1` and both `//cc:defs.bzl` and the per-rule `.bzl` files exist across that whole span |
 | `platforms` | 0.0.10 – 1.1.0 | 1.0.0 – 1.1.0 | same | as above; only ever a transitive/constraint dep |
+| `rules_dotnet` | 0.22.2 | 0.22.2 | winget-cli, PowerToys (MSBuild frontend) | 22 and 167 C# compiles converge with 0 errors, 19 of them through a template that bypasses its command line; 6 XAML projects on top. What it does differently from MSBuild is listed [below](#rules_dotnet-c) |
 | `rules_jvm_external` | 6.7 | — | Guava (Maven frontend) | one point, coordinate deps only; the Maven frontend is argv-floor, so this is not a parity claim |
 | `rules_license`, `googletest`, `google_benchmark`, `rules_python` | see note | — | BoringSSL, Abseil, RE2 | **not our choices** — these are what those projects' *own* Bazel builds declare (`rules_license` 1.0.0, `googletest` 1.17.0.bcr.2, `google_benchmark` 1.9.4/1.9.5, `rules_python` 1.7.0). We diffed against them; we did not select them |
 
@@ -204,9 +205,13 @@ migration lands on; the MSBuild-specific guidance is in
 * **The static C runtime is a feature**, `features = ["static_link_msvcrt"]`
   (`/MT`, and `libcmt.lib` as the default library). `copts = ["/MT"]` changes
   the compile and leaves the link asking for `msvcrt.lib`.
-* **There is no resource compiler and no precompiled-header support.** A `.rc`
-  file needs its own rule (the `.res` is a link input); `/Yc` and `/Yu` have no
-  equivalent, so every source parses its `pch.h`.
+* **rules_cc has no resource compiler and no precompiled-header support.** A
+  `.rc` file needs its own rule (the `.res` is a link input). Bazel itself
+  ships one, `windows_resources` in `@bazel_tools//tools/res:win_res.bzl`; it
+  passes no defines, include directories or options to `rc`, which the
+  reference builds here do, and was not used. `/Yc` and `/Yu` have no
+  equivalent: without a rule for them (`pch.bzl`) every source parses its
+  `pch.h`, and not always the same one.
 * **A test rule's executable can be a `.bat`.** A custom `test = True` rule that
   writes a batch launcher runs under `bazel test`; files are found through
   `RUNFILES_MANIFEST_FILE`, since Windows has no runfiles tree by default.
@@ -288,6 +293,33 @@ writing a `csharp_library` by hand:
   [`patches/rules_dotnet/`](../patches/rules_dotnet/README.md).
 * **`runtimeconfig.json` names `Microsoft.NETCore.App` only.** A program that
   loads WPF or WinForms does not start as built.
+
+## Windows: templates where a ruleset is missing
+
+The MSBuild migrations needed 29 template files (about 3,100 lines) for steps
+no ruleset covers. They are copied per migration from
+[`examples/powertoys/workspace-ui/bazel/`](../examples/powertoys/workspace-ui/bazel/).
+Checked on 2026-10-11 against the 1,359 modules of the Bazel Central Registry
+and by searching outside it:
+
+| Step | Template | A ruleset for it |
+|---|---|---|
+| Windows SDK tools and metadata by label (`rc`, `mt`, `midl`, `mdmerge`, `makepri`, `.winmd`) | `windows_sdk.bzl`, `rc.bzl`, `midl.bzl`, `winrt.bzl` | none. Bazel's own `windows_resources` covers `rc` without options; `windows_support` (BCR) downloads SDK headers and libraries, no tools |
+| C++/WinRT and C#/WinRT projections | `cppwinrt.bzl`, `dotnet/cswinrt.bzl` | none found |
+| NuGet as MSBuild resolved it, native packages included | `dotnet/nuget_assets.bzl` | rules_dotnet's `nuget_repo` re-resolves, for managed code only |
+| WinUI 3 XAML and the resource index | `dotnet/xaml_winui.bzl`, `dotnet/pri.bzl` | none found |
+| WPF markup | `dotnet/xaml_wpf.bzl` | none found |
+| MSVC precompiled headers | `pch.bzl` | not in rules_cc |
+| Spectre libraries, CppUnitTest, `vstest.console` | `msvc_toolset.bzl`, `vstest.bzl` | none found |
+| vcpkg manifest install | `vcpkg.bzl` | none found |
+| a program's directory | `layout.bzl` | `bazel_lib`, `rules_pkg`: not tried |
+| host executable, `.resx`, exact compile | `dotnet/apphost.bzl`, `resx.bzl`, `csc_assembly.bzl` | gaps of rules_dotnet |
+
+Which of these should become a module, which an upstream change, and what each
+would have to get right, is in
+[FUTURE-windows-bazel-modules.md](FUTURE-windows-bazel-modules.md). Until
+then: copy the templates, and read the guide of each before changing it. Most
+lines in them are there because something failed without them.
 
 ## `rules_foreign_cc`: not for the code under migration
 

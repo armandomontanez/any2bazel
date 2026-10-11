@@ -71,7 +71,7 @@ deterministic diff drives the loop — an LLM does only the creative work
 | [Ladybird](docs/CASE-ladybird-migration.md) | CMake | Full case study — performance & flag canonicalization |
 | [VSCode](docs/CASE-vscode-migration.md) | npm/esbuild | 7710/7710 `.js` byte parity |
 | [winget-cli, PowerToys](docs/CASE-winget-cli-migration.md) | MSBuild | Native: a static library, a DLL and a CppUnitTest DLL under `bazel test`. C#: every C# project of winget-cli and the non-XAML ones of PowerToys through `rules_dotnet`, with the WinRT interop chain |
-| [PowerToys: runner, WinUI 3, WPF](examples/powertoys/README-ui.md) | MSBuild | A 31-project slice emitted for C++ and C#: the runner, module DLLs and C++/WinRT components; two WinUI 3 apps (Hosts opens its window from `bazel run`, Color Picker its overlay); a WPF app. XAML compiler output, resource indexes and binaries compared with the MSBuild build's |
+| [PowerToys: runner, WinUI 3, WPF](examples/powertoys/README-ui.md) | MSBuild | A 31-project slice emitted for C++ and C#: the runner, module DLLs and C++/WinRT components; two WinUI 3 apps (Hosts opens its window from `bazel run`, Color Picker its overlay); a WPF app. XAML compiler output, resource indexes and binaries compared with the MSBuild build's. What went wrong on the way and how it was solved: [playbook](docs/REFERENCE-msbuild-playbook.md); what should become shared Bazel modules: [list](docs/FUTURE-windows-bazel-modules.md) |
 | BoringSSL, Abseil, RE2, fmt, spdlog, TinyXML2, zlib | CMake | See [EXPERIMENTS.md](EXPERIMENTS.md) |
 | Guava | Maven | See [EXPERIMENTS.md](EXPERIMENTS.md) |
 
