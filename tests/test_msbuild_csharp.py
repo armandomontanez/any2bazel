@@ -451,6 +451,12 @@ def test_what_msbuild_copied_beside_the_program_is_its_run_time_closure():
                       "resources": ["buildTransitive/net9.0/de/PlatformServices.resources.dll"],
                       "native": ["runtimes/win-x64/native/shim.dll"]}
     assert lock["targets"]["Engine"]["files"]["mstest.testadapter/3.8.3"] == ["embedded/Source.cs"]
+    # Everything that went into the program's directory, whatever a rule makes
+    # of it, by name: what a rule that lays the directory out asks for.
+    assert lock["targets"]["Engine"]["deployed"]["mstest.testadapter/3.8.3"] == [
+        "build/tools/amd64/profiler.dll", "buildTransitive/net9.0/PlatformServices.dll",
+        "buildTransitive/net9.0/de/PlatformServices.resources.dll", "lib/net9.0/testhost.exe",
+        "runtimes/win-x64/native/shim.dll"]
     # The feeds are still the feeds.
     assert lock["sources"] == ["https://feed.example/v3/index.json"]
 

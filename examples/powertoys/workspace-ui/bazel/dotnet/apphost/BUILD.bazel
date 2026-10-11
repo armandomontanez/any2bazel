@@ -1,0 +1,18 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
+load("//bazel/dotnet:dotnet_sdk.bzl", "dotnet_sdk_files")
+
+# The SDK's own writer of program hosts (what MSBuild's CreateAppHost task calls).
+dotnet_sdk_files(
+    name = "host_model",
+    paths = ["Microsoft.NET.HostModel.dll"],
+    visibility = ["//visibility:public"],
+)
+
+# The program behind apphost.bzl.
+csharp_binary(
+    name = "apphost",
+    srcs = ["AppHost.cs"],
+    nullable = "enable",
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)

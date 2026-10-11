@@ -1,0 +1,26 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary", "import_library")
+load("//bazel/dotnet:dotnet_sdk.bzl", "dotnet_sdk_files")
+
+# The writer MSBuild itself uses for .resources, from the toolchain's SDK.
+dotnet_sdk_files(
+    name = "resources_extensions_files",
+    paths = ["System.Resources.Extensions.dll"],
+)
+
+import_library(
+    name = "resources_extensions",
+    library_name = "System.Resources.Extensions",
+    libs = [":resources_extensions_files"],
+    refs = [":resources_extensions_files"],
+    version = "10.0.0",
+)
+
+# The tool behind resx.bzl. Its framework is the toolchain SDK's own: the
+# library above is built for it.
+csharp_binary(
+    name = "resx2resources",
+    srcs = ["Resx2Resources.cs"],
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+    deps = [":resources_extensions"],
+)

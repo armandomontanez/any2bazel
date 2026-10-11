@@ -1,0 +1,57 @@
+# vcpkg.json and vcpkg-configuration.json are PowerToys' own files.
+exports_files([
+    "nuget_lock.json",
+    "vcpkg.json",
+    "vcpkg-configuration.json",
+])
+
+# any2bazel:cc-exports begin (generated; do not edit between the markers)
+exports_files([
+    "src/common/Telemetry/ProjectTelemetry.h",
+    "src/common/Telemetry/TraceBase.h",
+    "src/common/Telemetry/TraceLoggingDefines.h",
+    "src/common/debug_control.h",
+    "src/common/hooks/WinHookEvent.h",
+    "src/common/utils/EventWaiter.h",
+    "src/common/utils/HttpClient.h",
+    "src/common/utils/MsiUtils.h",
+    "src/common/utils/OnThreadExecutor.h",
+    "src/common/utils/ProcessWaiter.h",
+    "src/common/utils/UnhandledExceptionHandler.h",
+    "src/common/utils/appMutex.h",
+    "src/common/utils/clean_video_conference.h",
+    "src/common/utils/color.h",
+    "src/common/utils/com_object_factory.h",
+    "src/common/utils/elevation.h",
+    "src/common/utils/excluded_apps.h",
+    "src/common/utils/game_mode.h",
+    "src/common/utils/gpo.h",
+    "src/common/utils/json.h",
+    "src/common/utils/language_helper.h",
+    "src/common/utils/logger_helper.h",
+    "src/common/utils/os-detect.h",
+    "src/common/utils/package.h",
+    "src/common/utils/processApi.h",
+    "src/common/utils/process_path.h",
+    "src/common/utils/registry.h",
+    "src/common/utils/resources.h",
+    "src/common/utils/string_utils.h",
+    "src/common/utils/timeutil.h",
+    "src/common/utils/winapi_error.h",
+    "src/common/utils/window.h",
+    "src/modules/ZoomIt/ZoomIt/DemoType.h",
+    "src/modules/ZoomIt/ZoomIt/Registry.h",
+    "src/modules/ZoomIt/ZoomIt/ZoomIt.h",
+    "src/modules/ZoomIt/ZoomIt/ZoomItSettings.h",
+    "src/modules/alwaysontop/Assets/AlwaysOnTop.ico",
+    "src/modules/interface/powertoy_module_interface.h",
+])
+# any2bazel:cc-exports end
+# any2bazel:dotnet-exports begin (generated; do not edit between the markers)
+exports_files([
+    "src/.editorconfig",
+    "src/codeAnalysis/GlobalSuppressions.cs",
+    "src/codeAnalysis/StyleCop.json",
+    "src/common/Telemetry/TelemetryBase.cs",
+])
+# any2bazel:dotnet-exports end

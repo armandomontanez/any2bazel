@@ -8,6 +8,9 @@ cannot reproduce.
 
 Exercised on winget-cli (22 C# compiles) and PowerToys (199 non-XAML C#
 compiles). Numbers and open ends are at the [end](#what-has-been-exercised).
+Projects that compile XAML (WinUI 3, WPF), resource indexes and programs that
+run from their own directory are in
+[REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md).
 
 ## The loop
 
@@ -183,7 +186,7 @@ Every C# target of the report ends in exactly one bucket, printed at the end:
 | Bucket | Meaning |
 |---|---|
 | emitted | a `csharp_library` / `csharp_binary`, or `exact_csharp_assembly` (see gaps) |
-| excluded | the project compiles XAML (`<assembly>.g.resources` among its resources), or depends on one that does |
+| excluded | not a project of its own: the temporary project MSBuild generates for the WPF markup compiler (`<Project>_<random>_wpftmp`). Also a project that embeds compiled markup when the report has no XAML digest for it (one extracted before the extractor recorded the markup compiler's runs) |
 | not emitted | something the emitter cannot express; the first line of the reason is printed, all are in the summary. A dependent of an unemitted target is unemitted too, and says so |
 
 What it does with the parts of a compile:
@@ -247,7 +250,7 @@ source:
 | `warning_level` accepts 0-5 | current SDKs pass `/warn:8` and up | analysis fails | `compiler_options` |
 | defines `NETSTANDARD*_OR_GREATER` for every framework | does not | a warning in the diff; harmless unless code tests them | accepted |
 | lets two selections of one package overwrite each other at run time (keyed by library name and version) | deploys the program's own selection | a program loses assemblies to a library's compile-only selection | one library name per selection; run-time files on programs only |
-| writes a `runtimeconfig.json` naming `Microsoft.NETCore.App` only (source) | names WindowsDesktop when used | a program that needs the WindowsDesktop shared framework would not find it; not observed in the suites that ran | open |
+| writes a `runtimeconfig.json` naming `Microsoft.NETCore.App` only (source) | names WindowsDesktop when used | a framework-dependent program that needs the WindowsDesktop shared framework would not find it. A self-contained one is unaffected: MSBuild copied the desktop run time beside it, so the lock carries it, and two WinForms programs of PowerToys open their windows under `bazel run` | open for framework-dependent programs |
 
 ### `csc_assembly`: the exact command line
 
@@ -486,8 +489,9 @@ copied by its `.targets`; and rules_dotnet lets a library's selection of a
 package replace the program's. The run-time closure is now what MSBuild copied
 beside each program, taken from the build's copy steps.
 
-Not exercised: XAML (WPF, WinUI) and packaging; a `<COMReference>` (the interop
-assembly MSBuild generates from a registered type library); CsWin32 run as a
+Not exercised here: packaging; a `<COMReference>` as a rule (the interop
+assembly MSBuild generates from a registered type library is copied from the
+reference tree, see the XAML guide); CsWin32 run as a
 build task; a VSTest-hosted suite under `bazel test`; publishing
 (self-contained, AOT, single file); Debug or ARM64; `dotnet build` as the
 driver; F# and VB. CsWinRT's `IIDOptimizer` post-compile step is reported and

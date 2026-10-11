@@ -94,6 +94,7 @@ class Root:
     version: str = ""
     # What the build was seen using from this root, as paths relative to it.
     include_dirs: Set[str] = field(default_factory=set)
+    sources: Set[str] = field(default_factory=set)
     libs: Set[str] = field(default_factory=set)
     tools: Set[str] = field(default_factory=set)
     imports: Set[str] = field(default_factory=set)
@@ -235,10 +236,11 @@ class Origins:
 
     def note(self, path: str, role: str, consumer: str = "") -> Classified:
         """Classify `path` and record that the build used it. `role` is one of
-        'include', 'lib', 'tool', 'import', 'reference'."""
+        'include', 'source', 'lib', 'tool', 'import', 'reference'."""
         c = self.classify(path)
         if c.root is not None:
-            bucket = {"include": c.root.include_dirs, "lib": c.root.libs,
+            bucket = {"include": c.root.include_dirs, "source": c.root.sources,
+                      "lib": c.root.libs,
                       "tool": c.root.tools, "import": c.root.imports,
                       "reference": c.root.references}.get(role)
             if bucket is not None:
@@ -256,7 +258,8 @@ class Origins:
         under it; one that merely imported build logic has nothing to map."""
         pairs = [(r.path, r.token) for r in self._roots.values()
                  if not _under(self._repo_low, r.path.lower())
-                 and (r.kind != NUGET or r.include_dirs or r.libs or r.tools or r.references)]
+                 and (r.kind != NUGET or r.include_dirs or r.sources or r.libs or r.tools
+                      or r.references)]
         return sorted(pairs, key=lambda p: (-len(p[0]), p[0].lower()))
 
     # ---- generated files ----------------------------------------------------
@@ -298,16 +301,20 @@ class Origins:
     # ---- package facts (filesystem; all best effort) -------------------------
 
     def nuget_facts(self, root: Root) -> Dict[str, str]:
-        """Content hash and source feed of a restored NuGet package, read from
-        what NuGet left on disk. Missing facts are simply absent -- never
-        guessed."""
+        """Hash and source feed of a restored NuGet package, read from what
+        NuGet left on disk. Missing facts are simply absent -- never guessed.
+
+        The hash is that of the package FILE (`<id>.<version>.nupkg.sha512`),
+        which is what a download can be checked against. The `contentHash` of
+        `.nupkg.metadata` is a different number for a signed package: NuGet
+        computes it without the signature. It is the last resort."""
         facts: Dict[str, str] = {}
         meta = os.path.join(root.path, ".nupkg.metadata")
+        content_hash = ""
         try:
             with open(meta, encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("contentHash"):
-                facts["sha512"] = data["contentHash"]
+            content_hash = data.get("contentHash") or ""
             if data.get("source"):
                 facts["source"] = data["source"]
         except (OSError, ValueError):
@@ -338,6 +345,8 @@ class Origins:
                         except OSError:
                             pass
                         break
+        if "sha512" not in facts and content_hash:
+            facts["sha512"] = content_hash
         # Bazel's `integrity` attribute takes exactly this form (SRI), so the
         # hash NuGet recorded can be used as is.
         if "sha512" in facts:
@@ -394,3 +403,34 @@ class Origins:
                                           and "/debug/" not in x.lower())
                     break
         return sorted(ports.values(), key=lambda p: (p["triplet"], p["name"]))  # type: ignore[index]
+
+    def vcpkg_file_owners(self, installed_dir: str) -> Dict[str, str]:
+        """Which port installed each file, from `vcpkg\\info\\*.list`: path below
+        the installed directory (POSIX, lower case, starting with the triplet)
+        -> port name. Empty when the database is not on this machine."""
+        key = win_norm(installed_dir).lower()
+        cache = self.__dict__.setdefault("_vcpkg_owners", {})
+        if key in cache:
+            return cache[key]
+        owners: Dict[str, str] = {}
+        info = os.path.join(installed_dir, "vcpkg", "info")
+        try:
+            lists = sorted(os.listdir(info))
+        except OSError:
+            lists = []
+        for name in lists:
+            if not name.endswith(".list"):
+                continue
+            # <port>_<version>_<triplet>.list; neither a version nor a triplet
+            # contains an underscore.
+            port = name[:-5].rsplit("_", 2)[0]
+            try:
+                with open(os.path.join(info, name), encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.endswith("/"):
+                            owners[line.lower()] = port
+            except OSError:
+                continue
+        cache[key] = owners
+        return owners

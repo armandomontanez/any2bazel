@@ -124,6 +124,9 @@ DEFAULT_ITEM_TYPES = (
     "COMReference", "SDKReference", "FrameworkReference", "NativeReference",
     "Compile", "EmbeddedResource", "Content", "None",
     "ProjectCapability", "ProjectConfiguration",
+    # Not evaluated: the list a target computes for MSBuild's copy-if-newer
+    # target, whose Copy task is only handed the part that is out of date.
+    "_SourceItemsToCopyToOutputDirectory",
 )
 
 # Bookkeeping tasks whose parameters are not dumped. They carry nothing the
@@ -465,6 +468,8 @@ class Target:
     tasks: List[Task] = field(default_factory=list)
     # Items a target body added (`<ItemGroup>` inside a target), by item type.
     added: Dict[str, List[Item]] = field(default_factory=dict)
+    # The same with removals, in the order they happened: (added?, item type, items).
+    item_changes: List[Tuple[bool, str, List[Item]]] = field(default_factory=list)
     succeeded: Optional[bool] = None
 
 
@@ -657,8 +662,10 @@ def correlate(records: Iterable[dict]) -> BuildLog:
                 task(r).inputs.setdefault(name, []).extend(items)
             elif pk == "TaskOutput" and r.get("k", -1) >= 0:
                 task(r).outputs.setdefault(name, []).extend(items)
-            elif pk == "AddItem" and "t" in r:
-                target(r).added.setdefault(r.get("itemType") or name, []).extend(items)
+            elif pk in ("AddItem", "RemoveItem") and "t" in r:
+                if pk == "AddItem":
+                    target(r).added.setdefault(r.get("itemType") or name, []).extend(items)
+                target(r).item_changes.append((pk == "AddItem", r.get("itemType") or name, items))
         elif kind == "Error":
             log.errors.append(BuildError(
                 code=r.get("code", ""), file=r.get("file", ""), line=r.get("line", 0),

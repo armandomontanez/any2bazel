@@ -301,8 +301,17 @@ def rules_dotnet_gaps(d: dict, project_dir: str = "") -> List[str]:
         including source generators MSBuild only runs when the project enables
         them.
       * Embedded resources: always named `<assembly>.<path>`; MSBuild names
-        them `<RootNamespace>.<path>` (or as `LogicalName` says)."""
+        them `<RootNamespace>.<path>` (or as `LogicalName` says).
+      * WinUI XAML: the project is compiled twice, around the XAML compiler,
+        which is told what the compiler references, file by file. A
+        rules_dotnet target does not expose that list."""
     gaps: List[str] = []
+    if (d.get("xaml") or {}).get("framework") == "winui":
+        gaps.append("WinUI XAML: compiled twice around the XAML compiler, which takes the "
+                    "compile's references as files")
+    if (d.get("xaml") or {}).get("framework") == "wpf":
+        gaps.append("WPF XAML: the markup compiler takes the compile's references as files, "
+                    "and the compiled markup is embedded under a name of its own")
     tfm = (d.get("target_framework") or "").split("-")[0]
     if _NETFX_TFM.match(tfm):
         gaps.append(".NET Framework target: rules_dotnet passes its whole reference pack, "

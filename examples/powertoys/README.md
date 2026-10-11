@@ -11,6 +11,10 @@ invokes. The narrative is in
 
 **This is a slice.** One project out of several hundred.
 
+A second overlay, [`workspace-ui/`](workspace-ui/), takes 31 projects through
+the emitters: the runner, module DLLs, two WinUI 3 apps and a WPF app that start
+under Bazel. It is described in [README-ui.md](README-ui.md).
+
 **What it achieves:**
 
 - `Common.Utils.UnitTests.dll` builds from a tree with every MSBuild output

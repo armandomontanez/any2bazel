@@ -130,9 +130,14 @@ is megabytes of argv; the report is what a BUILD author needs.
 | `undeclared_generated_inputs` | per target, directories of generated files it reads that belong to a project it does not reference |
 | `targets.<name>.compile.variants` | sources grouped by identical canonical flags, largest group first; later groups say how they differ from the first |
 | `targets.<name>.generated_inputs` | generated files the compiles read (from the read tracking log), by directory: produced by this project, or by which other one, and whether that one is referenced |
+| `targets.<name>.headers` | every file of the repository the compiles READ besides their sources (from the read tracking log). No project file lists them, and Bazel refuses a header nobody declared |
+| `targets.<name>.external_reads` | what the compiles read from package directories: files per package, and for a vcpkg tree the ports those files belong to |
+| `targets.<name>.include_environment` | directories of the `INCLUDE` variable that are not the toolchain's. Searched after `/I`, and on no command line (see the field notes) |
+| `targets.<name>.resources` | one entry per resource script: its options, the `.res` it writes, and the files it read |
+| `targets.<name>.optimization` | the optimization options, as given (`/O2 /GL /Gy`, `/LTCG /OPT:REF`). The digest leaves them out as the build type; a Bazel build that is to be the same build needs them |
 | `targets.<name>.external_headers` | `/external:*` flags and the `EXTERNAL_INCLUDE` directories: the warning policy for headers the project does not own |
 | `targets.<name>.dead_include_dirs` | include directories on the command line that do not exist on disk |
-| `targets.<name>` (other keys) | kind, role, output, project references, deps with origin, `libraries_offered_by_wildcard`, `link_flags`, `precompiled_header`, `generated_sources`, `steps`, `test` |
+| `targets.<name>` (other keys) | kind, role, output, project references, deps with origin, `libraries_offered_by_wildcard`, `link_flags`, `precompiled_header`, `generated_sources`, `steps`, `test`, `pri` (the resource index, see the XAML guide) |
 | `completeness` | unrecovered sources and possibly-stale projects |
 
 Paths in the report are repo-relative, or start with a token naming an external
@@ -318,7 +323,7 @@ boundary. `externals` in the report says what each one is.
 |---|---|---|
 | `msvc` | compiler, CRT, STL, ATL/MFC, Spectre libraries, the unit-test framework under `VC\Auxiliary` | the pinned host toolchain. Libraries read from `lib\spectre\<arch>` (shown under `libs`) mean the build links Spectre-mitigated runtimes; that directory must come first in the link search path |
 | `winsdk` | headers and import libraries (through the toolchain environment); tools (`midl`, `rc`, `mt`, `makepri`) and contract `.winmd` files (by path) | toolchain for headers and libraries. For tools and winmds, a repository rule that locates the **pinned** SDK version and exposes them as labels, so actions declare them as inputs |
-| `nuget` | a restored package: headers, libraries, tools, and build logic imported from its `build\` directory | `http_archive` (`type = "zip"`) per package from the recorded `source` feed with the recorded `integrity`, exposing only the `include_dirs`, `libs` and `tools` the report lists. A package listing only `build_imports` contributed MSBuild logic: reproduce its effect (flags, generated files), not the file |
+| `nuget` | a restored package: headers, libraries, tools, and build logic imported from its `build\` directory | `http_archive` (`type = "zip"`) per package from the recorded `source` feed with the recorded `integrity`, exposing only the `include_dirs`, `sources`, `libs` and `tools` the report lists (`sources`: files the package has its consumers compile, such as the Windows App SDK's initializers). A package listing only `build_imports` contributed MSBuild logic: reproduce its effect (flags, generated files), not the file |
 | `vcpkg` | a tree vcpkg built during the MSBuild build | a Bazel-owned install from the project's own manifest, baseline, overlay triplets and overlay ports, verbatim. One `cc_library` per port from the `ports` list. Not a registry substitute and not the nearest NuGet package: different versions and build flags make the diff meaningless |
 | `generated` | a file the build produced under the repo (untracked, or in an intermediate directory) | a Bazel action; see below |
 | `unknown` | none of the above | an undeclared host dependency. Find out what it is before migrating |
@@ -333,7 +338,9 @@ and [`examples/powertoys/workspace/bazel/`](../examples/powertoys/workspace/baze
 | `msvc_toolset.bzl` | parts of Visual Studio beyond the toolchain: Spectre-mitigated libraries, the C++ unit-test framework, the location of `vstest.console.exe` |
 | `vcpkg.bzl` | `vcpkg install` inside MSBuild: the project's manifest into a repository, one target per port |
 | `nuget/*.BUILD.bazel` | a restored package directory, as an `http_archive` |
-| `cppwinrt.bzl`, `midl.bzl`, `rc.bzl` | generators and the resource compiler, as actions with declared outputs |
+| `cppwinrt.bzl`, `midl.bzl`, `rc.bzl` | generators and the resource compiler, as actions with declared outputs. `cppwinrt_component` is `cppwinrt -component` for a project that implements WinRT classes |
+| `pch.bzl` | MSVC precompiled headers (`/Yc`, `/Yu`), which rules_cc does not have |
+| `layout.bzl` | the shared output directory: files of many targets under the names the reference build gave them, runnable with `bazel run` |
 | `vstest.bzl` | the CI step that runs a test DLL |
 
 Copy and adapt them; they are templates, not a library.
@@ -353,6 +360,57 @@ Libraries an object pulls in through `/DEFAULTLIB` directives (the CRT,
 `uuid.lib`, `#pragma comment(lib, ...)`) never appear on a command line. They are
 resolved by the toolchain's library path on both sides.
 
+## The native emitter
+
+```bash
+python3 "$SKILL_DIR/scripts/emit_cc.py" msbuild.report.json nuget_lock.json <workspace> \
+    --reference-root <tree the reference build ran in> [--generated-map hooks.json]
+```
+
+`emit_cc.py` restates each C++ project of the report as a `cc_library` or
+`cc_binary`, in the project's directory. It is a starting point, not an
+authority: run the diff on the result, and `check_outputs.py` after building.
+
+| MSBuild | what it writes |
+|---|---|
+| sources, defines, options | `srcs`, `local_defines`, `copts`, from the compile command lines. `/MT` becomes `features = ["static_link_msvcrt"]` |
+| include directories | `copts` (`/I<dir>`), not `includes`: MSBuild does not hand them to referencing projects |
+| headers | the files the compiles read (`headers` in the report), listed in `srcs`; one of another package by label, exported from there |
+| package directories | dependencies: the vcpkg ports and NuGet packages whose headers were read, and the directory alone (`@vcpkg//:include`, `cc.headers`) where the command line names one nothing was read from |
+| precompiled header | `msvc_precompiled_header`, and `/Yu` on the target |
+| `.rc` | `windows_resources`, with the files the script read |
+| MIDL 3 + `cppwinrt -component` | `winrt_winmd`, `cppwinrt_component`; the Windows SDK projection once for all (`//bazel/cppwinrt:platform`) |
+| link | system libraries by name in `linkopts`, other projects as labels, `/DEF:` as `win_def_file`, manifests as inputs |
+| output name | a program or DLL is named after its file (`PowerToys.Interop.dll`), a static library after its project |
+
+A program-specific build step has no rule the emitter could know: a version
+header written by a target, a resource script made from translations by a
+PowerShell script. A file such a step generated is **copied from the reference
+tree** into the workspace, at the path the build read it from, and listed
+under `snapshots` in `emit_cc.summary.json`. The build works; the file is a
+frozen copy until a rule replaces it. `--generated-map` names such rules:
+
+```json
+[{"match": "version/Generated Files/", "deps": ["//src/common/version:generated"]}]
+```
+
+`match` is a fragment of the generated file's path, `deps` the libraries that
+provide it as a header, `file` its label where it is an input by itself (a
+resource script). Count the snapshots: each is a step still to migrate.
+
+What it cannot express is listed per target under `unhandled`, and that target
+is not written. It also writes `emit_cc.any2bazel.json`: the `target_map`,
+`include_map`, `source_map` and `source_dir_map` entries that follow from its
+naming, to merge into `any2bazel.json`. None of them names a directory of the
+machine the reference was built on: the model already spells a path below a
+package with the package's token (`@nuget/<id>/include/x.cpp`), so the entries
+only say where Bazel has the same package.
+
+NuGet packages come from the same lock as for C# (`nuget_assets.py`): a C++
+project has no assets file, so what it takes from a package is what its command
+lines name. The lock gives each such package `cc.headers` and one target per
+library, and exports the tools and metadata files a build step used.
+
 ## Where MSBuild differs from Bazel
 
 **Configuration.** A solution configuration (`Release|x64`) is not uniform: it
@@ -370,7 +428,9 @@ targets that write version or resource headers. A `write` step for a `.rsp`
 file carries its lines: that is the command line of the tool that reads it. A
 `target` step with `ran: false` was up to date in this build but still lists
 its declared inputs and outputs. Each becomes a Bazel action whose tool comes
-from a NuGet or SDK repository.
+from a NuGet or SDK repository. A `copy` step marked `up_to_date` lists files
+MSBuild was to deploy and found in place: another project building into the
+same directory had copied them (see "Programs" in the XAML guide).
 
 Two shapes need care:
 
@@ -397,10 +457,19 @@ header-only `cc_library` owns them. Project-local include directories are
 `copts`, not `includes`: MSBuild does not hand them to referencing projects.
 
 **Precompiled headers.** `/Yc` and `/Yu` are compared as mechanics, and rules_cc
-has no MSVC PCH support. `/Yu"pch.h"` is not a forced include: it only works
-because each source includes `pch.h` itself. Do not add `/FI"pch.h"`;
-`precompiled_header.not_using` lists the sources that would break. Compile
-without a PCH (slower, same result) unless you write a rule for it.
+has no MSVC PCH support. Compiling without one is NOT the same build, only
+slower. With `/Yu"pch.h"` the compiler does not open `pch.h`: it takes
+everything up to `#include "pch.h"` from the `.pch`. Without it, that directive
+is an ordinary include, looked up beside the source first. So a source one
+project shares with another (`<ClCompile Include="..\Other\trace.cpp">`, common
+in PowerToys) picks up the OTHER project's `pch.h`, with other contents, and a
+generated source that sits in an output directory (`module.g.cpp` of
+C++/WinRT) finds none. `pch.bzl` is a rule for it: `msvc_precompiled_header`
+runs the `/Yc` compile through the C++ toolchain, and the target's own compiles
+use the result (`/Yu`, `/Fp$(execpath ...)`, `additional_compiler_inputs`).
+Both must be given the same options, or the compiler rejects the `.pch`.
+`precompiled_header.not_using` lists the sources that opted out; they are
+compiled apart. Do not add `/FI"pch.h"`.
 
 **Warnings in headers the project does not own.** MSBuild marks toolchain,
 NuGet and vcpkg directories as external through the `EXTERNAL_INCLUDE`
@@ -421,6 +490,13 @@ as `rc.bzl`; without one the binary links fine and has no version information.
 project usually also has a `.def` file, embedded resources, a manifest and
 delay-load flags; `link_flags` shows them, with paths repo-relative. In Bazel a
 DLL is `cc_binary(name = "x.dll", linkshared = True, win_def_file = ...)`.
+
+A static library can carry other libraries: `<Lib><AdditionalDependencies>`
+makes the librarian copy their members in, and whoever links the library gets
+them without naming them. The report lists them as `deps` of the static
+library. A `cc_library` cannot contain another library; it hands them on
+(`linkopts`, `deps`), which reaches the same links. Miss it and a link fails on
+a symbol the reference link line never names either.
 
 **Output layout.** Projects often write into one shared
 `<Platform>\<Configuration>\` tree, copy files into each other's output
@@ -474,6 +550,36 @@ Set `include_tests` only after production parity.
   first real one.
 - `diff.py` prints JSON to stdout. In PowerShell, `>` writes UTF-16; use Git
   Bash, or expect the readers here to cope only with `aquery.json`.
+- **The `INCLUDE` variable is part of the build.** The compiler and the resource
+  compiler search it after their `/I` directories, and no command line shows
+  it. A relative entry is taken from the tool's working directory and need not
+  exist to matter: `#include "../../../common/version/version.h"` from a
+  directory only three levels deep resolves through `<project>\<anything>`.
+  PowerToys has such an entry (`PreventSdkUapPropsAssignment`, the name of a
+  property, leaked into the variable) and sources that only compile because of
+  it. The report lists these entries (`include_environment`).
+- **A project library can hide a system library of the same name.**
+  `#pragma comment(lib, "version.lib")` asks for the SDK's `version.lib`; with
+  PowerToys' own `Version.lib` on the link line the linker considers the
+  request met and never opens the SDK's. The reference still links because the
+  library that needs it was archived with it (see Linking).
+- **A source file can be an include.** `#include <common/SettingsAPI/settings_helpers.cpp>`
+  makes a `.cpp` a header of another project. Listed in `srcs`, rules_cc would
+  compile it; it belongs in `textual_hdrs` of a `cc_library`.
+- **Option order is lost in the digest, and sometimes matters.**
+  `/std:c++latest` implies `/permissive-` for whatever `/permissive` came before
+  it. State `/std:` first.
+- **NuGet records two hashes.** `<id>.<version>.nupkg.sha512` is the hash of the
+  package file; `contentHash` in `.nupkg.metadata` leaves the signature out and
+  is a different number for a signed package. Only the first can check a
+  download.
+- **The same function, another DLL.** Windows ships most of kernel32 a second
+  time as API-set libraries (through `WindowsApp.lib`), and a symbol comes from
+  whichever import library the linker reaches first. Bazel puts a target's
+  static libraries before its `linkopts`, MSBuild after: a binary can import
+  `GetFileType` from `kernel32.dll` where the reference imports it from
+  `api-ms-win-core-file-l1-1-0.dll`. Both load the same code.
+  `check_outputs.py` reports it as a note.
 
 ## What has been exercised
 
@@ -494,11 +600,19 @@ On one machine: Bazel 9.2.0, rules_cc 0.2.17, MSVC 14.51.36231, Windows SDK
   CppUnitTest under `bazel test` (same 484 tests, same results as the reference
   DLL).
 
-C# under rules_dotnet, with `midl /winrt`, `mdmerge` and the C#/WinRT projection,
-is covered in [REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md).
+- **The native emitter**, on a 31-project slice of PowerToys (the runner, a
+  WinUI app, two WPF apps, a native utility and what they reference): all 16
+  C++ projects emitted and built, among them the runner (`PowerToys.exe`),
+  three module DLLs and three C++/WinRT components. The slice converges with 0
+  errors, C# included, and `check_outputs.py` finds the same exports, imported
+  functions and resources in all 7 binaries.
 
-Not exercised: a whole native solution; native executables; the C++/WinRT
-component projection (`cppwinrt -component`); a Catch2 or GoogleTest
-executable under `cc_test`; XAML; MSIX and WiX packaging;
-Debug or ARM64 configurations; `clang-cl`; builds driven by `dotnet build`;
-and anything on Linux beyond the differ's own tests.
+C# under rules_dotnet, with `midl /winrt`, `mdmerge` and the C#/WinRT projection,
+is covered in [REFERENCE-msbuild-csharp.md](REFERENCE-msbuild-csharp.md); XAML
+(WinUI 3 and WPF), resource indexes and runnable program directories in
+[REFERENCE-msbuild-xaml.md](REFERENCE-msbuild-xaml.md).
+
+Not exercised: a whole native solution (the emitter has seen 16 projects of
+PowerToys' 110); a Catch2 or GoogleTest executable under `cc_test`; C++ XAML;
+MSIX and WiX packaging; Debug or ARM64 configurations; `clang-cl`; builds
+driven by `dotnet build`; and anything on Linux beyond the differ's own tests.

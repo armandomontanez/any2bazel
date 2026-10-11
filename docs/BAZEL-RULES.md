@@ -224,6 +224,36 @@ migration lands on; the MSBuild-specific guidance is in
   libraries. A project's own `/SUBSYSTEM:` in `linkopts` comes later on the
   line and wins.
 
+### What the emitted C++ targets rely on
+
+Found while taking 16 PowerToys projects through `emit_cc.py` (rules_cc 0.2.17,
+Bazel 9.2):
+
+- **`additional_compiler_inputs`** on `cc_library` / `cc_binary`, with
+  `$(execpath ...)` in `copts`: how a compile is handed the `.pch` another
+  action wrote (`/Yu`, `/Fp`). The `/Yc` compile itself is a rule
+  (`pch.bzl`) that takes its command line from `cc_common`, so that Bazel's own
+  options are the same on both sides.
+- **`cc_common.create_linking_context_from_compilation_outputs`**: turns the
+  object of such a rule into a library like any other (with `alwayslink` for a
+  program, whose project hands every object to the linker).
+- **`textual_hdrs`** exists on `cc_library` only. A source another source
+  includes goes into a small library the binary depends on.
+- **A target's static libraries come before its `linkopts` on the link line.**
+  MSBuild has system libraries first. Symbols that two import libraries offer
+  (kernel32 and the API sets) bind to another DLL.
+- **Compile actions use a parameter file aquery does not report**
+  (`--include_param_files` has it for links only). Query with
+  `--features=-compiler_param_file`, or every native target looks like an
+  aggregate without sources.
+- **`attr.string_keyed_label_dict`** (destination to target) and
+  `ctx.actions.symlink` are what a rule needs to lay files of many targets out
+  in one directory (`layout.bzl`); with `startup --windows_enable_symlinks` the
+  links are real ones.
+- **A library named like a system library** (`Version.lib`) satisfies a
+  `#pragma comment(lib, "version.lib")` for the linker. Not a rules_cc matter,
+  but it surfaces here first: see the field notes of REFERENCE-msbuild.md.
+
 ## `rules_dotnet` (C#)
 
 Exercised: 0.22.2 on Bazel 9, Windows, .NET SDK 10.0.400, against winget-cli

@@ -921,6 +921,10 @@ _BYPRODUCT_EXTS = (".pch", ".pchast", ".pdb", ".obj", ".idb", ".ipdb", ".iobj", 
                    ".res", ".tlog")
 _PROJECT_FILE_EXTS = (".vcxproj", ".vcxitems", ".csproj", ".vbproj", ".fsproj")
 _MAX_EXAMPLES = 10
+# A directory with at most this many generated files is listed in full: few
+# enough to be the output of a project's own step rather than a projection of
+# a whole SDK.
+_MAX_LISTED = 64
 
 
 def _generated_inputs(g: _Group, groups: List[_Group], origins: Origins, repo_root: str,
@@ -973,6 +977,8 @@ def _generated_inputs(g: _Group, groups: List[_Group], origins: Origins, repo_ro
                        for n in by_dir[holder])
         entry: dict = {"dir": _repo_rel(truecase.path(holder), repo_root), "files": len(names),
                        "examples": names[:_MAX_EXAMPLES]}
+        if len(names) <= _MAX_LISTED:
+            entry["names"] = names
         if holder == own or holder.startswith(own + "\\"):
             entry["produced_by"] = "this project"
         else:
@@ -988,6 +994,336 @@ def _generated_inputs(g: _Group, groups: List[_Group], origins: Origins, repo_ro
             entry["referenced"] = bool(project_file) and win_norm(project_file).lower() in referenced
         out.append(entry)
     return out
+
+
+# Read by the code analysis a compile runs (`/analyze`), not by the translation
+# unit.
+_ANALYSIS_EXTS = (".ruleset",)
+
+
+def _tracked_inputs(g: _Group, tool: str, origins: Origins, repo_root: str,
+                    truecase: _TrueCase, given: Iterable[str]
+                    ) -> Tuple[List[str], Dict[str, dict], List[str]]:
+    """What `tool` READ while building this project, from its read tracking log:
+    the files of the repository (repo-relative, without `given`, the files named
+    on its command lines), what it took from each package directory
+    ({token: {files, ports}}; `ports` for a vcpkg tree), and the files it read
+    that a build step had written (repo-relative).
+
+    For the compiler this is the only place a C++ build says which headers a
+    project needs. No project file lists them as inputs: an include directory is
+    the whole declaration, and it usually reaches far outside the project."""
+    tlog_dir = _tlog(g)
+    if tlog_dir is None or not tlog_dir.exists():
+        return [], {}, []
+    skip = {win_norm(p).upper() for p in given}
+    repo: Set[str] = set()
+    generated: Set[str] = set()
+    external: Dict[str, dict] = {}
+    seen: Set[str] = set()
+    for files in tlog_dir.reads(tool).values():
+        for path in files:
+            norm = win_norm(path)
+            upper = norm.upper()
+            if upper in seen:
+                continue
+            seen.add(upper)
+            if upper in skip or upper.lower().endswith(_BYPRODUCT_EXTS + _ANALYSIS_EXTS):
+                continue
+            c = origins.classify(norm)
+            if c.kind == origins_mod.REPO:
+                repo.add(_repo_rel(truecase.path(norm), repo_root))
+            elif c.kind == origins_mod.GENERATED:
+                generated.add(_repo_rel(truecase.path(norm), repo_root))
+            elif c.root is not None and c.kind in (origins_mod.NUGET, origins_mod.VCPKG):
+                entry = external.setdefault(c.root.token, {"files": 0})
+                entry["files"] += 1
+                if c.kind == origins_mod.VCPKG and c.root.token.startswith("@vcpkg/"):
+                    installed = ntpath.dirname(c.root.path)
+                    triplet = ntpath.basename(c.root.path)
+                    port = origins.vcpkg_file_owners(installed).get(
+                        (triplet + "/" + c.rel).lower())
+                    if port:
+                        entry.setdefault("ports", set()).add(port)
+    for entry in external.values():
+        if "ports" in entry:
+            entry["ports"] = sorted(entry["ports"])
+    return sorted(repo, key=str.lower), external, sorted(generated, key=str.lower)
+
+
+def _resource_scripts(g: _Group, actions: List[Action], origins: Origins, repo_root: str,
+                      truecase: _TrueCase, path_map: Sequence[Tuple[str, str]]) -> List[dict]:
+    """One entry per resource compile (`rc.exe`): the script, its options, the
+    `.res` it writes (a link input) and the files of the repository it read
+    (icons, manifests, version headers: nothing lists those either)."""
+    out: List[dict] = []
+    scripts = []
+    for action in actions:
+        args = action.arguments[1:]
+        if not args:
+            continue
+        script = _join(action.cwd, args[-1])
+        defines: List[str] = []
+        includes: List[str] = []
+        options: List[str] = []
+        output = ""
+        i = 0
+        while i < len(args) - 1:
+            tok = args[i]
+            low = tok.lower()
+            spaced = low in ("/d", "-d", "/i", "-i", "/fo", "-fo")
+            value = args[i + 1] if spaced and i + 1 < len(args) - 1 else tok[2:]
+            if low[:2] in ("/d", "-d") and (spaced or len(tok) > 2):
+                defines.append(value)
+            elif low[:2] in ("/i", "-i") and (spaced or len(tok) > 2):
+                includes.append(norm_path(_join(action.cwd, value), repo_root, "", path_map))
+            elif low[:3] in ("/fo", "-fo"):
+                output = _repo_rel(_join(action.cwd, args[i + 1] if spaced else tok[3:]), repo_root)
+            elif low not in ("/nologo", "-nologo"):
+                options.append("/" + tok[1:] if tok.startswith("-") else tok)
+            i += 2 if spaced else 1
+        scripts.append(script)
+        out.append({"script": _repo_rel(script, repo_root), "defines": sorted(set(defines)),
+                    "includes": _one_spelling(includes), "options": options, "output": output})
+    if out:
+        reads, _, generated = _tracked_inputs(g, "rc", origins, repo_root, truecase, scripts)
+        # The tracking log is per project, not per script: with several scripts
+        # the files are what all of them read together.
+        for entry in out:
+            entry["reads"] = reads
+            if generated:
+                entry["generated_reads"] = generated
+    return out
+
+
+def _include_environment(g: _Group, origins: Origins, repo_root: str,
+                         path_map: Sequence[Tuple[str, str]]) -> List[str]:
+    """Entries of the INCLUDE variable the project's tools ran with that are
+    not the toolchain's own directories, in order.
+
+    The compiler and the resource compiler search INCLUDE after their `/I`
+    directories, and nothing on a command line shows it. A RELATIVE entry is
+    taken from the tool's working directory, and need not exist to matter:
+    `#include "../../../x.h"` resolves through `<project>\\<anything>` as if the
+    including file were one level deeper than it is. PowerToys has such an
+    entry (the name of a property, leaked into the variable) and sources that
+    only compile because of it."""
+    value = ""
+    for task in g.tasks("SetEnv"):
+        if task.scalar("Name").upper() == "INCLUDE":
+            value = task.scalar("Value")
+    out: List[str] = []
+    for entry in value.split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        absolute = _join(g.dir, entry)
+        c = origins.classify(absolute)
+        if c.kind in (origins_mod.MSVC, origins_mod.WINSDK, origins_mod.VS, origins_mod.DOTNET):
+            continue
+        spelled = norm_path(absolute, repo_root, "", path_map)
+        if spelled not in out:
+            out.append(spelled)
+    return out
+
+
+_CL_OPTIMIZATION = re.compile(r"^/(O[12dgistxy]|Ob[0-3]|Oi-?|Oy-?|GL-?|Gy-?|Gw-?|GF-?)$")
+_LINK_OPTIMIZATION = re.compile(r"^/(LTCG(:[A-Za-z]+)?|OPT:[A-Za-z,]+)$", re.IGNORECASE)
+
+
+def _optimization(compiles: List[Action], link: Optional[Action]) -> dict:
+    """The optimization options of the build, as given: {compile, link}.
+
+    The digest leaves them out as the build type (a Debug and a Release build
+    of one project are the same build to the differ). They are reported apart
+    so that a Bazel build can be given the same ones: whole-program
+    optimization (`/GL` with `/LTCG`) decides what ends up in a binary, and a
+    link can come to depend on unused code being dropped."""
+    def options(action: Optional[Action], pattern) -> List[str]:
+        found: List[str] = []
+        for tok in (action.arguments if action else []):
+            spelled = "/" + tok[1:] if tok.startswith("-") else tok
+            if pattern.match(spelled) and spelled not in found:
+                found.append(spelled)
+        return found
+
+    out: dict = {}
+    compile_options = options(compiles[0] if compiles else None, _CL_OPTIMIZATION)
+    link_options = options(link, _LINK_OPTIMIZATION)
+    if compile_options:
+        out["compile"] = compile_options
+    if link_options:
+        out["link"] = link_options
+    return out
+
+
+def _pri(g: _Group, repo_root: str, fs: bool) -> dict:
+    """The project's resource index (`.pri`), from the tasks that built it: its
+    name and output, the configuration file, and what went in, by kind.
+
+      layout     files that are resources by being in the project (images):
+                 {path, name}, `name` being the path the index knows them by
+      embed      files stored in the index itself (compiled XAML): {path, name}
+      resources  string tables (.resw)
+      pri_files  indexes of libraries and packages, merged into this one
+
+    The tasks are given candidates and write the lists they settle on to files
+    (`*.resfiles`); those files are read when they are on this machine."""
+    generate = [t for t in g.tasks("WinAppSdkGenerateProjectPriFile")
+                if t.scalar("OutputFileName").lower().endswith(".pri")]
+    configure = list(g.tasks("WinAppSdkGeneratePriConfigurationFiles"))
+    if not generate or not configure:
+        return {}
+    task, lists = generate[-1], configure[-1]
+
+    def written(parameter: str) -> Optional[List[str]]:
+        path = lists.scalar(parameter)
+        if not fs or not path:
+            return None
+        try:
+            with open(_join(g.dir, path), encoding="utf-8-sig", errors="replace") as f:
+                return [line.strip() for line in f if line.strip()]
+        except OSError:
+            return None
+
+    def named(parameter: str, list_parameter: str) -> List[dict]:
+        by_name: Dict[str, dict] = {}
+        for item in lists.inputs.get(parameter, []):
+            name = item.get("TargetPath") or ntpath.basename(win_norm(item.spec))
+            by_name.setdefault(name.lower(), {
+                "path": _repo_rel(_join(g.dir, item.spec), repo_root), "name": name})
+        chosen = written(list_parameter)
+        if chosen is None:
+            return list(by_name.values())
+        return [by_name.get(n.lower(), {"path": "", "name": n}) for n in chosen]
+
+    def plain(parameter: str, list_parameter: str) -> List[str]:
+        chosen = written(list_parameter)
+        if chosen is None:
+            chosen = [i.spec for i in lists.inputs.get(parameter, [])]
+        return [_repo_rel(_join(g.dir, p), repo_root) for p in chosen]
+
+    return {
+        "output": _repo_rel(_join(g.dir, task.scalar("OutputFileName")), repo_root),
+        "index_name": task.scalar("ProjectPriIndexName"),
+        "config": _repo_rel(_join(g.dir, task.scalar("PriConfigXmlPath")), repo_root),
+        "makepri": _repo_rel(task.scalar("MakePriExeFullPath"), repo_root),
+        "layout": named("LayoutFiles", "FilteredLayoutResfilesPath"),
+        "embed": named("EmbedFiles", "EmbedFileResfilePath"),
+        "resources": plain("PRIResourceFiles", "ResourcesResfilesPath"),
+        "pri_files": plain("PriFiles", "PriResfilesPath"),
+    }
+
+
+def _is_xaml_precompile(action: Action) -> bool:
+    """The compile of a WinUI project's intermediate assembly (target
+    XamlPreCompile): it writes into `<IntDir>intermediatexaml\\`."""
+    out = next((a for a in action.arguments if a[:5].lower() in ("/out:", "-out:")), "")
+    return "\\intermediatexaml\\" in out.replace("/", "\\").lower()
+
+
+# Parameters of CompileXaml that are lists of files.
+_XAML_FILE_LISTS = ("XamlPages", "XamlApplications", "SdkXamlPages", "ClIncludeFiles",
+                    "ReferenceAssemblies", "ReferenceAssemblyPaths", "LocalAssembly")
+# Parameters that are a place on the machine or in the build tree, which a rule
+# supplies itself (the compiler package, its output directory).
+_XAML_PLACES = ("ProjectPath", "OutputPath", "SavedStateFile", "GenXbfPath", "WindowsSdkPath",
+                "VCInstallDir", "VCInstallPath32", "VCInstallPath64", "FingerprintIgnorePaths")
+
+
+def _xaml(g: _Group, repo_root: str, path_map: Sequence[Tuple[str, str]]) -> dict:
+    """How the project's XAML was compiled, from the tasks that did it.
+
+    WinUI (`CompileXaml`, twice): per pass the pages and application
+    definitions, the scalar parameters, the references that are NOT a
+    package's (the compiler is told which are), the intermediate assembly of
+    pass 2, and what it wrote (generated code, compiled XAML).
+
+    WPF (`MarkupCompilePass1` / `MarkupCompilePass2` / `ResourcesGenerator`):
+    the markup, the generated code and compiled markup of each pass, and the
+    resources file the compiled markup is embedded through."""
+    def files(items) -> List[str]:
+        # A task output assigned to several item types is logged once for each.
+        return list(dict.fromkeys(_repo_rel(_join(g.dir, i.spec), repo_root) for i in items))
+
+    winui = list(g.tasks("CompileXaml"))
+    if winui:
+        out: dict = {"framework": "winui", "project": _repo_rel(g.file, repo_root)}
+        for task in winui:
+            first = task.scalar("IsPass1").lower() == "true"
+            entry: dict = {
+                "settings": {name: task.scalar(name) for name in sorted(task.inputs)
+                             if name not in _XAML_FILE_LISTS and name not in _XAML_PLACES},
+                "output_path": _repo_rel(_join(g.dir, task.scalar("OutputPath")), repo_root),
+            }
+            for key, parameter in (("pages", "XamlPages"), ("applications", "XamlApplications")):
+                listed = []
+                for item in task.inputs.get(parameter, []):
+                    page = {"path": _repo_rel(_join(g.dir, item.spec), repo_root),
+                            "spec": item.spec}
+                    if item.get("Link"):
+                        page["link"] = item.get("Link")
+                    listed.append(page)
+                if listed:
+                    entry[key] = listed
+            references = task.inputs.get("ReferenceAssemblies", [])
+            # By file name, in the order given: the compiler numbers the types
+            # it finds in that order (the type table of XamlTypeInfo.g.cs).
+            entry["reference_order"] = [ntpath.basename(win_norm(i.spec)) for i in references]
+            entry["references_not_from_packages"] = [
+                norm_path(_join(g.dir, i.spec), repo_root, "", path_map)
+                for i in references if not i.get("NuGetPackageId")]
+            if task.inputs.get("LocalAssembly"):
+                entry["local_assembly"] = files(task.inputs["LocalAssembly"])[0]
+            for key, parameter in (("code", "GeneratedCodeFiles"), ("xaml", "GeneratedXamlFiles"),
+                                   ("xbf", "GeneratedXbfFiles")):
+                if task.outputs.get(parameter):
+                    entry.setdefault("outputs", {})[key] = files(task.outputs[parameter])
+            out["pass1" if first else "pass2"] = entry
+        return out
+
+    wpf = list(g.tasks("MarkupCompilePass1"))
+    if wpf:
+        task = wpf[0]
+        out = {"framework": "wpf", "project": _repo_rel(g.file, repo_root)}
+        first: dict = {
+            "settings": {name: task.scalar(name) for name in sorted(task.inputs)
+                         if name not in ("References", "SourceCodeFiles", "PageMarkup",
+                                         "ApplicationMarkup", "ContentFiles", "OutputPath",
+                                         "KnownReferencePaths", "AssembliesGeneratedDuringBuild",
+                                         "SplashScreen", "ExtraBuildControlFiles")},
+            "output_path": _repo_rel(_join(g.dir, task.scalar("OutputPath")), repo_root),
+            "pages": [{"path": _repo_rel(_join(g.dir, i.spec), repo_root), "spec": i.spec}
+                      for i in task.inputs.get("PageMarkup", [])],
+            "applications": [{"path": _repo_rel(_join(g.dir, i.spec), repo_root), "spec": i.spec}
+                             for i in task.inputs.get("ApplicationMarkup", [])],
+            # By item spec: the generated code records these paths as written.
+            "content": [i.spec for i in task.inputs.get("ContentFiles", [])],
+            # What pass 2 picks up from pass 1 (`<Assembly>_MarkupCompile.cache`, `.lref`).
+            "state": [p for p in files(task.outputs.get("AllGeneratedFiles", []))
+                      if p.lower().endswith((".cache", ".lref"))],
+            "requires_pass2": task.outputs.get("RequirePass2ForMainAssembly", [None])[0] is not None
+            and task.outputs["RequirePass2ForMainAssembly"][0].spec.lower() == "true",
+            "outputs": {"code": files(task.outputs.get("GeneratedCodeFiles", [])),
+                        "baml": files(task.outputs.get("GeneratedBamlFiles", []))},
+        }
+        out["pass1"] = first
+        for second in g.tasks("MarkupCompilePass2"):
+            out["pass2"] = {
+                "settings": {name: second.scalar(name) for name in sorted(second.inputs)
+                             if name not in ("References", "OutputPath", "KnownReferencePaths",
+                                             "AssembliesGeneratedDuringBuild")},
+                "outputs": {"baml": files(second.outputs.get("GeneratedBaml", []))}}
+        for resources in g.tasks("ResourcesGenerator"):
+            out["resources"] = {
+                "output": files(resources.outputs.get("OutputResourcesFile", []))[0]
+                if resources.outputs.get("OutputResourcesFile") else "",
+                "files": [{"path": _repo_rel(_join(g.dir, i.spec), repo_root),
+                           **({"logical_name": i.get("LogicalName")} if i.get("LogicalName") else {}),
+                           **({"link": i.get("Link")} if i.get("Link") else {})}
+                          for i in resources.inputs.get("ResourceFiles", [])]}
+        return out
+    return {}
 
 
 def _project_file_above(directory: str, repo_root: str, truecase: _TrueCase) -> str:
@@ -1049,6 +1385,50 @@ def _solution_configuration(log: events.BuildLog, repo_root: str) -> List[dict]:
     return []
 
 
+# MSBuild's copy-if-newer target (`CopyToOutputDirectory=PreserveNewest`), and
+# the item list a target before it computes for it.
+_COPY_IF_NEWER = "_CopyOutOfDateSourceItemsToOutputDirectory"
+_COPY_IF_NEWER_ITEMS = "_SourceItemsToCopyToOutputDirectory"
+
+
+def _copies_already_there(g: _Group, inst: events.Project) -> List[Tuple[str, str]]:
+    """(source, destination) of what MSBuild's copy-if-newer target was to
+    deploy and did not hand to its Copy task, because the file was there.
+
+    The target declares inputs and outputs, so MSBuild runs its Copy for the
+    out-of-date part of the list only. Projects that build into one directory
+    (PowerToys: every WinUI app into `WinUI3Apps`) each deploy the same
+    runtime files there. The first one copies them; every later one logs a
+    Copy without them, in a clean build as well. The list itself is in the log:
+    the target that computed it added its items one by one."""
+    ran = [t for t in inst.targets if t.name == _COPY_IF_NEWER]
+    skipped = any(s.name == _COPY_IF_NEWER and s.reason == "OutputsUpToDate" for s in inst.skipped)
+    out_dir = g.prop("OutDir")
+    if not (ran or skipped) or not out_dir:
+        return []
+    listed: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    for target in inst.targets:
+        for added, item_type, items in target.item_changes:
+            if item_type.lower() != _COPY_IF_NEWER_ITEMS.lower():
+                continue
+            for item in items:
+                key = (item.spec.lower(), item.get("TargetPath").lower())
+                if not added:
+                    for stale in [k for k in listed if k[0] == key[0]]:
+                        del listed[stale]
+                elif item.get("TargetPath"):
+                    listed.setdefault(key, (item.spec, item.get("TargetPath")))
+    copied = {win_norm(_join(g.dir, i.spec)).lower()
+              for t in ran for task in t.tasks if task.name.lower() == "copy"
+              for i in task.inputs.get("DestinationFiles", [])}
+    pairs = []
+    for source, target_path in listed.values():
+        destination = ntpath.join(out_dir, target_path)
+        if win_norm(_join(g.dir, destination)).lower() not in copied:
+            pairs.append((source, destination))
+    return pairs
+
+
 def _steps(g: _Group, repo_root: str) -> List[dict]:
     """Non-compile work the project did, for a human or an LLM to turn into
     Bazel rules: commands run, files written, files copied, and targets that
@@ -1095,6 +1475,12 @@ def _steps(g: _Group, repo_root: str) -> List[dict]:
                         # reads it (cppwinrt, midl, mdmerge).
                         step["lines"] = [i.spec for i in task.inputs.get("Lines", [])]
                     steps.append(step)
+        there = _copies_already_there(g, inst)
+        key = "copy-there:%s" % sorted(d.lower() for _, d in there)
+        if there and key not in seen:
+            seen.add(key)
+            steps.append({"kind": "copy", "target": _COPY_IF_NEWER, "up_to_date": True,
+                          "from": [rel(s) for s, _ in there], "to": [rel(d) for _, d in there]})
         for skipped in inst.skipped:
             if skipped.reason == "OutputsUpToDate" and (skipped.inputs or skipped.outputs):
                 key = "skipped:" + skipped.name
@@ -1220,6 +1606,11 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
         for action in compiles:
             for directory in cl_include_dirs(action.arguments):
                 origins.note(_join(action.cwd, directory), "include", g.name)
+            # A source a package has its consumers compile (an initializer the
+            # package's targets file adds to the project).
+            source = _join(action.cwd, action.inputs[0]) if action.inputs else ""
+            if source and origins.classify(source).kind == origins_mod.NUGET:
+                origins.note(source, "source", g.name)
         # Tools: the executable of every recorded action, and of every command
         # a target ran (cppwinrt, vcpkg, scripts via powershell).
         for action in target.actions:
@@ -1321,6 +1712,13 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
             external = _external_headers(group_of[name], compiles, repo_root, model.path_map)
             if external:
                 entry["external_headers"] = external
+            environment = _include_environment(group_of[name], origins, repo_root, model.path_map)
+            if environment:
+                entry["include_environment"] = environment
+            optimization = _optimization(compiles, next(
+                (a for a in model.targets[name].actions if a.mnemonic == "CppLink"), None))
+            if optimization:
+                entry["optimization"] = optimization
             if fs:
                 dead = _dead_include_dirs(compiles, repo_root, model.path_map)
                 if dead:
@@ -1334,6 +1732,17 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
                              and not i["referenced"]]
                     if loose:
                         undeclared[name] = [i["dir"] for i in loose]
+                headers, external_reads, _ = _tracked_inputs(
+                    group_of[name], "CL", origins, repo_root, truecase,
+                    [a.inputs[0] for a in compiles if a.inputs])
+                if headers:
+                    entry["headers"] = headers
+                if external_reads:
+                    entry["external_reads"] = external_reads
+        scripts = [a for a in model.targets[name].actions if a.mnemonic == "ResourceCompile"]
+        if scripts:
+            entry["resources"] = _resource_scripts(group_of[name], scripts, origins, repo_root,
+                                                   truecase, model.path_map)
         link = next((a for a in model.targets[name].actions
                      if a.mnemonic in ("CppLink", "CppArchive")), None)
         if link is not None and link.mnemonic == "CppLink":
@@ -1343,8 +1752,17 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
                         if a.mnemonic in ("ResourceCompile", "Midl"))
         if other:
             entry["other_actions"] = dict(other)
-        managed = next((a for a in model.targets[name].actions
-                        if a.mnemonic == "CSharpCompile" and a.arguments), None)
+        pri = _pri(group_of[name], repo_root, fs)
+        if pri:
+            entry["pri"] = pri
+        compiles_cs = [a for a in model.targets[name].actions
+                       if a.mnemonic == "CSharpCompile" and a.arguments]
+        # A WinUI project compiles twice: first into an intermediate assembly
+        # the XAML compiler's second pass reads. The project's compile is the
+        # other one.
+        intermediate = [a for a in compiles_cs if _is_xaml_precompile(a)]
+        managed = next((a for a in compiles_cs if a not in intermediate),
+                       compiles_cs[0] if compiles_cs else None)
         if managed is not None:
             g = group_of[name]
             inst = _build_instance(g)
@@ -1365,6 +1783,23 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
                 # What NuGet resolved for this project: the input of nuget_assets.py.
                 entry["csharp"]["assets_file"] = _repo_rel(
                     _join(g.dir, g.prop("ProjectAssetsFile")), repo_root)
+            for host in g.tasks("CreateAppHost"):
+                # The executable that starts the program: a copy of a pack's
+                # apphost.exe with the assembly's name written into it.
+                entry["csharp"]["apphost"] = {
+                    "template": _repo_rel(host.scalar("AppHostSourcePath"), repo_root),
+                    "binary": host.scalar("AppBinaryName"),
+                    "gui": host.scalar("WindowsGraphicalUserInterface").lower() == "true",
+                }
+            xaml = _xaml(g, repo_root, model.path_map)
+            if xaml:
+                if intermediate and intermediate[0] is not managed:
+                    xaml["precompile"] = csharp.digest(
+                        intermediate[0].arguments, repo_root, intermediate[0].cwd, fs=fs,
+                        is_generated=lambda p: origins.classify(p).kind == origins_mod.GENERATED,
+                        project_of=lambda p, me=name: _managed_owner(p, managed_outputs, me),
+                        resource_sources={})
+                entry["csharp"]["xaml"] = xaml
 
     root_file = _root_file(log)
     root = next((p for p in log.projects.values() if p.parent < 0), None)
@@ -1435,7 +1870,7 @@ def extract(events_path: str, repo_root: str, *, use_tlogs: bool = True,
 def _externals(origins: Origins, fs: bool) -> List[dict]:
     out: List[dict] = []
     for root in origins.roots():
-        used = (root.include_dirs or root.libs or root.tools or root.imports
+        used = (root.include_dirs or root.sources or root.libs or root.tools or root.imports
                 or root.references)
         if not used and root.kind not in (origins_mod.MSVC, origins_mod.WINSDK):
             continue
@@ -1444,7 +1879,8 @@ def _externals(origins: Origins, fs: bool) -> List[dict]:
             entry["id"] = root.id
         if root.version:
             entry["version"] = root.version
-        for key, values in (("include_dirs", root.include_dirs), ("libs", root.libs),
+        for key, values in (("include_dirs", root.include_dirs), ("sources", root.sources),
+                            ("libs", root.libs),
                             ("tools", root.tools), ("build_imports", root.imports),
                             ("references", root.references)):
             if values:

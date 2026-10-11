@@ -550,9 +550,12 @@ def test_generated_files_a_compile_read_are_reported_with_their_producer():
         _, report = _extract(root, fs=True)
         # Sorted by directory: src/app/... before src/lib/...
         other, own = report["targets"]["lib"]["generated_inputs"]
+        # A directory with few generated files is listed in full (`names`).
         assert own == {"dir": "src/lib/x64/Release/Generated Files", "files": 1,
-                       "examples": ["winrt/base.h"], "produced_by": "this project"}
+                       "examples": ["winrt/base.h"], "names": ["winrt/base.h"],
+                       "produced_by": "this project"}
         assert other == {"dir": "src/app/x64/Release", "files": 1, "examples": ["App_h.h"],
+                         "names": ["App_h.h"],
                          "produced_by": "another project", "target": "app",
                          "project": "src/app/app.vcxproj", "referenced": False}
         # lib does not reference app: only build order makes that header exist.
@@ -754,6 +757,56 @@ def test_winrt_metadata_of_a_project_with_its_intermediates_under_obj_and_severa
     assert facts["midl_options"] == ["/W1", "/char", "signed", "/env", "x64", "/enum_class",
                                      "/ns_prefix", "/target", "NT60"]
     assert "midl_options_vary" not in facts
+
+
+def _app(targets, skipped=()):
+    """A program that builds into a directory it shares with other programs."""
+    project = ROOT + "\\src\\app\\app.csproj"
+    evaluation = msbuild_events.Evaluation(id=1, file=project, props=msbuild_events._Props(
+        {"ProjectDir": ROOT + "\\src\\app\\", "OutDir": ROOT + "\\out\\Apps\\"}))
+    instance = msbuild_events.Project(ctx=1, file=project, targets=list(targets), skipped=list(skipped))
+    return extract_msbuild._Group(file=project, evaluation=evaluation, instances=[instance], name="app")
+
+
+def _copy_list():
+    """What MSBuild's copy-if-newer target is to deploy: a runtime file every
+    program in the directory needs, and a file of this program."""
+    item = msbuild_events.Item
+    listing = msbuild_events.Target(id=1, name="GetCopyToOutputDirectoryItems")
+    listing.item_changes = [
+        (True, "_SourceItemsToCopyToOutputDirectory", [
+            item("C:\\nuget\\sdk\\1.0\\native\\Runtime.dll", {"TargetPath": "Runtime.dll"}),
+            item(ROOT + "\\src\\app\\Assets\\app.png", {"TargetPath": "Assets\\app.png"}),
+            item(ROOT + "\\src\\app\\notes.txt", {"TargetPath": "notes.txt"})]),
+        (False, "_SourceItemsToCopyToOutputDirectory", [item(ROOT + "\\src\\app\\notes.txt")]),
+    ]
+    return listing
+
+
+def test_what_another_project_already_copied_is_still_a_copy_of_this_one():
+    # Another program put Runtime.dll into the shared directory first, so the
+    # Copy task of this one is handed the out-of-date part of the list only.
+    item = msbuild_events.Item
+    copy = msbuild_events.Task(id=1, name="Copy", inputs={
+        "SourceFiles": [item(ROOT + "\\src\\app\\Assets\\app.png")],
+        "DestinationFiles": [item(ROOT + "\\out\\Apps\\Assets\\app.png")]})
+    partial = msbuild_events.Target(id=2, name="_CopyOutOfDateSourceItemsToOutputDirectory", tasks=[copy])
+    steps = [s for s in extract_msbuild._steps(_app([_copy_list(), partial]), ROOT) if s["kind"] == "copy"]
+    assert steps == [
+        {"kind": "copy", "target": "_CopyOutOfDateSourceItemsToOutputDirectory",
+         "from": ["src/app/Assets/app.png"], "to": ["out/Apps/Assets/app.png"]},
+        {"kind": "copy", "target": "_CopyOutOfDateSourceItemsToOutputDirectory", "up_to_date": True,
+         "from": ["C:/nuget/sdk/1.0/native/Runtime.dll"], "to": ["out/Apps/Runtime.dll"]}]
+
+    # Everything was there: MSBuild skips the target, and the list is all there is.
+    skipped = msbuild_events.SkippedTarget(name="_CopyOutOfDateSourceItemsToOutputDirectory",
+                                           reason="OutputsUpToDate")
+    steps = [s for s in extract_msbuild._steps(_app([_copy_list()], [skipped]), ROOT) if s["kind"] == "copy"]
+    assert [(s["up_to_date"], s["to"]) for s in steps] == [
+        (True, ["out/Apps/Runtime.dll", "out/Apps/Assets/app.png"])]
+
+    # A project that only answered which files it would deploy copies nothing.
+    assert not [s for s in extract_msbuild._steps(_app([_copy_list()]), ROOT) if s["kind"] == "copy"]
 
 
 if __name__ == "__main__":

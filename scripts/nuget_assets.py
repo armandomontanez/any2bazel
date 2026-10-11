@@ -79,6 +79,8 @@ _PLACEHOLDER = "_._"
 # Framework packs rules_dotnet supplies for the target framework by itself.
 TOOLCHAIN_PACKS = ("microsoft.netcore.app.ref", "netstandard.library")
 NUGET_ORG = "https://api.nuget.org/v3/index.json"
+# The package the WinUI XAML compiler ships in (lower case, as a lock key starts).
+XAML_COMPILER_PACKAGE = "microsoft.windowsappsdk.winui"
 _TOOL = re.compile(r'^\s*(?:"([^"]+)"|(\S+))')
 # An absolute Windows path in a line of a config file, up to a list separator.
 _CONFIG_PATH = re.compile(r"[A-Za-z]:[\\/][^|;,\"<>*?\r\n]+")
@@ -325,7 +327,7 @@ def build_lock(report: dict, repo_root: str,
         rid = digest.get("runtime_identifier", "")
         name = framework_name(tfm, rid)
         entry = {"framework": name, "target_framework": tfm, "packages": {}, "files": {},
-                 "displaced": [], "packs": {}, "_exact": False}
+                 "deployed": {}, "displaced": [], "packs": {}, "_exact": False}
         targets[target_name] = entry
         # A target rules_dotnet's own rules cannot reproduce is compiled from
         # the lock alone, so it takes even the toolchain's packs from here.
@@ -405,6 +407,7 @@ def build_lock(report: dict, repo_root: str,
                  + digest.get("sources", {}).get("external", []))
         output = report["targets"][target_name].get("output", "").replace("\\", "/")
         out_dir = output.rsplit("/", 1)[0] if "/" in output else ""
+        program = digest.get("target", "library") != "library"
         # Package files MSBuild's generated analyzer config names by path (the
         # metadata a source generator is pointed at).
         for config in digest.get("analyzer_configs", []):
@@ -438,6 +441,19 @@ def build_lock(report: dict, repo_root: str,
                     if not copied or copied.get("kind") not in ("nuget", "pack"):
                         continue
                     role = _deployed_as(destination, out_dir, copied["path"])
+                    if program and _below(destination, out_dir):
+                        # Whatever a rule makes of it, it is part of the
+                        # program's directory: addressable as a file.
+                        if copied["kind"] == "nuget":
+                            package(copied["id"], copied["version"])
+                            entry["deployed"].setdefault(
+                                _key(copied["id"], copied["version"]), set()).add(copied["path"])
+                        else:
+                            key = "%s/%s" % (copied["id"], copied["version"])
+                            root = source.replace("\\", "/")
+                            root = root[:-len(copied["path"]) - 1] if root.lower().endswith(
+                                "/" + copied["path"].lower()) else ""
+                            pending_packs.append((entry, "deployed", key, [copied["path"]], root))
                     if role is None:
                         # Copied somewhere else in the project (sources a
                         # package embeds into its consumers, for one), or laid
@@ -463,14 +479,29 @@ def build_lock(report: dict, repo_root: str,
             if item.get("kind") == "nuget":
                 package(item["id"], item["version"])
                 entry["files"].setdefault(_key(item["id"], item["version"]), set()).add(item["path"])
+        # The template of the program's host executable.
+        template = (digest.get("apphost") or {}).get("template", "")
+        host = classify_external(template) if template else None
+        if host and host.get("kind") == "pack":
+            pending_packs.append((entry, None, "%s/%s" % (host["id"], host["version"]),
+                                  [host["path"]], template[:-len(host["path"]) - 1]))
+        elif host and host.get("kind") == "nuget":
+            package(host["id"], host["version"])
+            entry["files"].setdefault(_key(host["id"], host["version"]), set()).add(host["path"])
 
     # Framework packs read from the machine (WindowsDesktop, ASP.NET, the .NET
     # Framework reference assemblies): the same files, from the package.
     checks: Dict[str, dict] = {}
     for entry, role, pack_key, files, root in pending_packs:
         package_id, version, prefix = pack_package(pack_key, folders)
-        selection(entry, package_id, version)[role].update(prefix + f for f in files)
         key = _key(package_id, version)
+        if role is None or role == "deployed":
+            # A file of the pack some rule names by itself.
+            package(package_id, version)
+            entry["files" if role is None else "deployed"].setdefault(key, set()).update(
+                prefix + f for f in files)
+        else:
+            selection(entry, package_id, version)[role].update(prefix + f for f in files)
         entry["packs"][pack_key] = key
         check = checks.setdefault(key, {"of": pack_key, "root": root, "prefix": prefix,
                                         "files": set()})
@@ -573,6 +604,67 @@ def build_lock(report: dict, repo_root: str,
         entry["packages"] = {key: variant[(key, entry["framework"], text)]
                              for key, text in sorted(entry["packages"].items())}
         entry["files"] = {k: sorted(v) for k, v in sorted(entry["files"].items())}
+        # Package files MSBuild copied beside a program, whatever their role:
+        # what a rule that lays the program's directory out takes by name.
+        entry["deployed"] = {k: sorted(v) for k, v in sorted(entry["deployed"].items())}
+        if not entry["deployed"]:
+            del entry["deployed"]
+
+    # Resource indexes: makepri with what it loads, and the indexes and images
+    # packages contribute.
+    for target_name, entry in targets.items():
+        pri = report["targets"][target_name].get("pri")
+        if not pri:
+            continue
+        paths = [pri.get("makepri", "")] + pri.get("pri_files", []) \
+            + [f["path"] for f in pri.get("layout", [])]
+        tool = pri.get("makepri", "")
+        if "/" in tool:
+            paths.append(tool.rsplit("/", 1)[0] + "/mrmsupport.dll")
+        for path in paths:
+            where = classify_external(path) if re.match(r"^[A-Za-z]:", path) else None
+            if where and where.get("kind") == "nuget":
+                key = _key(where["id"], where["version"])
+                package(where["id"], where["version"])
+                entry["files"][key] = sorted(set(entry["files"].get(key, [])) | {where["path"]})
+
+    # The WinUI XAML compiler: a program of the package, with what it loads.
+    for target_name, entry in targets.items():
+        digest = report["targets"][target_name].get("csharp") or {}
+        if (digest.get("xaml") or {}).get("framework") != "winui":
+            continue
+        for key in entry.get("packages", {}):
+            if not key.startswith(XAML_COMPILER_PACKAGE + "/"):
+                continue
+            root = next((folder for folder in (
+                os.path.join(base, key.replace("/", os.sep)) for base in folders)
+                if list_directory(folder)), None)
+            if root is None:
+                unresolved.append(key + " (XAML compiler files)")
+                continue
+            tools = ["tools/net472/" + f for f in sorted(list_directory(os.path.join(root, "tools", "net472")))]
+            tools += ["tools/%s/GenXbf.dll" % arch for arch in ("x64", "x86")
+                      if "GenXbf.dll" in list_directory(os.path.join(root, "tools", arch))]
+            entry["files"][key] = sorted(set(entry["files"].get(key, [])) | set(tools))
+
+    for key, native in native_packages(report).items():
+        record = packages.setdefault(key, {"id": native["id"], "version": native["version"],
+                                           "integrity": "", "frameworks": {}})
+        record["integrity"] = record["integrity"] or native["integrity"]
+        if not record["integrity"]:
+            unresolved.append(key)
+        if native["cc"]:
+            record["cc"] = native["cc"]
+            # Which targets compile or link against the package: nothing else
+            # in a target's entry says so when it takes no single file from it.
+            for target_name in native["consumers"]:
+                entry = targets.setdefault(target_name, {"files": {}})
+                entry["cc"] = sorted(set(entry.get("cc", [])) | {key})
+        for target_name, files in native["files"].items():
+            entry = targets.setdefault(target_name, {"files": {}})
+            entry["files"][key] = sorted(set(entry["files"].get(key, [])) | set(files))
+        if native["source"] and native["source"] not in sources:
+            sources.append(native["source"])
 
     return {
         "schema": LOCK_SCHEMA,
@@ -581,6 +673,67 @@ def build_lock(report: dict, repo_root: str,
         "targets": {k: targets[k] for k in sorted(targets)},
         "unresolved": unresolved,
     }
+
+
+_RSP_ARGUMENT = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def native_packages(report: dict) -> Dict[str, dict]:
+    """What the C++ targets of `report` take from NuGet packages, per package
+    key: {id, version, integrity, source, cc: {include_dirs, libs}, files:
+    {target: [path in package]}}.
+
+    A C++ project has no assets file. What it uses of a package is what its
+    command lines name: include directories and libraries (`externals` in the
+    report), the tools its build steps run, and the metadata files (`.winmd`)
+    it hands to them through response files."""
+    native = {name for name, t in report.get("targets", {}).items() if "csharp" not in t}
+    out: Dict[str, dict] = {}
+    roots: List[Tuple[str, str]] = []
+    for external in report.get("externals", []):
+        if external.get("kind") != "nuget" or not external.get("version"):
+            continue
+        consumers = sorted(native & set(external.get("consumers", [])))
+        if not consumers:
+            continue
+        key = _key(external["id"], external["version"])
+        roots.append((external["root"].replace("/", "\\").rstrip("\\").lower() + "\\", key))
+        record = out.setdefault(key, {
+            "id": external["id"], "version": external["version"],
+            "integrity": external.get("integrity", ""), "source": external.get("source", ""),
+            "cc": {}, "files": {}, "consumers": []})
+        record["consumers"] = sorted(set(record["consumers"]) | set(consumers))
+        for field in ("include_dirs", "libs"):
+            if external.get(field):
+                record["cc"][field] = sorted(set(record["cc"].get(field, [])) | set(external[field]))
+        # A tool is recorded as the command spelled it, often without `.exe`.
+        tools = [t if "." in t.rsplit("/", 1)[-1] else t + ".exe" for t in external.get("tools", [])]
+        for consumer in consumers:
+            record["files"].setdefault(consumer, []).extend(tools)
+    def note(name: str, path: str) -> None:
+        value = path.replace("/", "\\")
+        low = value.lower()
+        for root, key in roots:
+            if low.startswith(root) and not low.endswith("\\."):
+                out[key]["files"].setdefault(name, []).append(value[len(root):].replace("\\", "/"))
+                return
+
+    for name in sorted(native):
+        target = report["targets"][name]
+        # Sources a package has its consumers compile.
+        for variant in target.get("compile", {}).get("variants", []):
+            for source in variant.get("sources", []):
+                note(name, source)
+        for step in target.get("steps", []):
+            if step.get("kind") != "write":
+                continue
+            for line in step.get("lines", []):
+                for m in _RSP_ARGUMENT.finditer(line):
+                    note(name, m.group(1) if m.group(1) is not None else m.group(2))
+    for record in out.values():
+        record["files"] = {t: sorted(set(f)) for t, f in sorted(record["files"].items()) if f}
+    # A package that only contributed build logic has nothing to download.
+    return {key: record for key, record in out.items() if record["cc"] or record["files"]}
 
 
 def downloader(feeds: Sequence[str], cache_dir: str):

@@ -1,0 +1,49 @@
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
+load("//bazel/dotnet:dotnet_sdk.bzl", "dotnet_sdk_files")
+
+# The program behind xaml_winui.bzl: writes the XAML compiler's input, runs it
+# and reports its diagnostics.
+csharp_binary(
+    name = "xaml_compile",
+    srcs = ["XamlCompile.cs"],
+    nullable = "enable",
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
+# The program behind pri.bzl: lays a project's resources out for makepri.exe
+# and runs it.
+csharp_binary(
+    name = "make_pri",
+    srcs = ["MakePri.cs"],
+    nullable = "enable",
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
+# The program behind xaml_wpf.bzl: hosts the WPF markup compiler's MSBuild tasks.
+csharp_binary(
+    name = "wpf_markup",
+    srcs = ["WpfMarkup.cs"],
+    nullable = "enable",
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
+# The WPF markup compiler, from the toolchain's own SDK.
+dotnet_sdk_files(
+    name = "presentation_build_tasks",
+    paths = ["Sdks/Microsoft.NET.Sdk.WindowsDesktop/tools/net10.0/PresentationBuildTasks.dll"],
+    visibility = ["//visibility:public"],
+)
+
+# What it loads from the SDK directory: MSBuild's task interfaces.
+dotnet_sdk_files(
+    name = "presentation_build_tasks_needs",
+    paths = [
+        "Microsoft.Build.Framework.dll",
+        "Microsoft.Build.Utilities.Core.dll",
+        "Microsoft.Build.dll",
+    ],
+    visibility = ["//visibility:public"],
+)

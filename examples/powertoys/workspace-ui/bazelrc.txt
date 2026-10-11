@@ -1,0 +1,29 @@
+# Runfiles as links, not copies (needs Developer Mode): a rules_dotnet program's
+# runfiles hold the whole .NET SDK.
+startup --windows_enable_symlinks
+
+common --check_direct_dependencies=error
+
+# The toolchain the reference build resolved (msbuild.report.json -> toolchain).
+# Bazel otherwise takes the newest Visual Studio on the machine.
+common --repo_env="BAZEL_VC=C:/Program Files/Microsoft Visual Studio/18/Community/VC"
+common --repo_env=BAZEL_VC_FULL_VERSION=14.51.36231
+common --repo_env=BAZEL_WINSDK_FULL_VERSION=10.0.26100.0
+
+# rules_cc defines _WIN32_WINNT=0x0601 (Windows 7) on every compile and the
+# flag cannot be removed. MSBuild defines nothing and lets the SDK headers pick
+# their default. The variable holds the whole flag, so make it a no-op.
+common --repo_env=BAZEL_WIN32_WINNT=/U_WIN32_WINNT
+
+build -c opt
+
+# rules_cc also defines these on every compile, and they cannot be removed
+# either. MSBuild defines none of them; a source that defines NOMINMAX itself
+# then fails under /WX (C4005, macro redefinition). Undo them.
+build --copt=/UNOMINMAX
+build --copt=/U_CRT_SECURE_NO_DEPRECATE
+build --copt=/U_CRT_SECURE_NO_WARNINGS
+
+# rules_dotnet finds a program's assemblies through its runfiles tree, which
+# Windows only gets on request (and needs Developer Mode for the symlinks).
+common --enable_runfiles

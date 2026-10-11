@@ -1,0 +1,46 @@
+module(name = "powertoys")
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_dotnet", version = "0.22.2")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+
+# The Windows SDK the reference build used: contract metadata, midl, mdmerge, rc.
+windows_sdk = use_repo_rule("//bazel:windows_sdk.bzl", "windows_sdk")
+
+windows_sdk(
+    name = "windows_sdk",
+    version = "10.0.26100.0",
+)
+
+msvc_toolset = use_repo_rule("//bazel:msvc_toolset.bzl", "msvc_toolset")
+
+# Version and VC directory come from BAZEL_VC / BAZEL_VC_FULL_VERSION (.bazelrc).
+msvc_toolset(name = "msvc")
+
+# The project's own vcpkg manifest, installed by Bazel.
+vcpkg_install = use_repo_rule("//bazel:vcpkg.bzl", "vcpkg_install")
+
+vcpkg_install(
+    name = "vcpkg",
+    manifest = "//:vcpkg.json",
+    # vcpkg-configuration.json names this directory as an overlay.
+    recipe_dirs = ["deps/vcpkg-overlays"],
+    triplet = "x64-windows-static",
+)
+
+dotnet = use_extension("@rules_dotnet//dotnet:extensions.bzl", "dotnet")
+
+# rules_dotnet's newest SDK; the reference build compiled with 10.0.401.
+dotnet.toolchain(dotnet_version = "10.0.400")
+use_repo(dotnet, "dotnet_toolchains")
+
+register_toolchains("@dotnet_toolchains//:all")
+
+# What MSBuild resolved, package by package (scripts/nuget_assets.py): assemblies
+# for C#, and headers, libraries and tools for C++.
+nuget_assets = use_repo_rule("//bazel/dotnet:nuget_assets.bzl", "nuget_assets")
+
+nuget_assets(
+    name = "nuget",
+    lock = "//:nuget_lock.json",
+)

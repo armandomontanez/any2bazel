@@ -40,8 +40,14 @@ It is a starting point, not an authority: run the diff on the result, and
 target under `unhandled` in the summary it prints (and writes to
 `emit_dotnet.summary.json`), and a target with anything unhandled is not
 written at all -- a BUILD file that silently drops an input would look
-converged on everything else. A project that compiles XAML is `excluded`
-instead: out of scope by decision, and counted apart.
+converged on everything else.
+
+A project that compiles XAML gets the steps MSBuild runs around its compile
+(the WinUI or WPF markup compiler twice, with a compile in between), its
+resource index, and, for a program, the host executable and the directory
+MSBuild would have left it in: see docs/REFERENCE-msbuild-xaml.md. A file some
+step generated that no rule here produces (a COM interop assembly) is copied
+from the reference tree and listed as a `snapshot`.
 
 `--generated-map FILE` names the rules that produce a project's own generated
 sources (JSON list of {match, srcs, load, starlark, bazel_output}; see
@@ -56,6 +62,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -84,6 +91,10 @@ _RESX_FILE_REF = re.compile(
 _ABSOLUTE_PATH = re.compile(r"[A-Za-z]:[\\/][^|;,\"<>*?\r\n]+")
 # Name, in a Bazel model, of the .resx converter resx.bzl builds.
 RESX_TOOL = "bazel/dotnet/resx:resx2resources"
+XAML_TOOL = "bazel/dotnet/xaml:xaml_compile"
+WPF_TOOL = "bazel/dotnet/xaml:wpf_markup"
+PRI_TOOL = "bazel/dotnet/xaml:make_pri"
+APPHOST_TOOL = "bazel/dotnet/apphost:apphost"
 # csc options whose value is a file: an attribute of csc_assembly, or nothing.
 _EXACT_FILE_OPTIONS = {"/keyfile": "keyfile", "/win32icon": "win32_icon",
                        "/win32manifest": "win32_manifest"}
@@ -216,6 +227,31 @@ class Emitter:
         # metadata targets some C# target turned out to need.
         self.winmd_owner = self._winmd_index()
         self.winmd_targets: Dict[str, str] = {}
+        # What the C++ emitter wrote into the same workspace, by the file name
+        # of its output: programs take native libraries along.
+        self.native_outputs: Dict[str, str] = {}
+        try:
+            with open(os.path.join(workspace_root, "emit_cc.summary.json"), encoding="utf-8") as f:
+                native = json.load(f).get("targets", {})
+        except (OSError, ValueError):
+            native = {}
+        for native_name, record in native.items():
+            other = report.get("targets", {}).get(native_name, {})
+            if "label" not in record or "unhandled" in record or not other.get("output"):
+                continue
+            self.native_outputs[_posix(other["output"]).rsplit("/", 1)[-1].lower()] = record["label"]
+            winmd = (other.get("winrt") or {}).get("winmd")
+            if winmd:
+                label = record["label"]
+                stem = label[:-4] if label.lower().endswith(".dll") else label
+                self.native_outputs[_posix(winmd).rsplit("/", 1)[-1].lower()] = stem + "_winmd"
+        # Files copied from the reference tree because no rule produces them:
+        # workspace path -> why.
+        self.snapshots: Dict[str, str] = {}
+        # Resource indexes: `.pri` path (repo-relative, lower case) -> the
+        # reference target that builds it.
+        self.pri_owner = {_posix(t["pri"]["output"]).lower(): n
+                          for n, t in self.targets.items() if t.get("pri")}
         # Project-specific generators the operator has written rules for.
         self.hooks: List[dict] = list(hooks or [])
         # (path prefix, token) pairs for any2bazel.json's ignore.source_map.
@@ -225,6 +261,24 @@ class Emitter:
         self.gaps: Dict[str, List[str]] = {
             name: rules_dotnet_gaps(t["csharp"], self.package[name])
             for name, t in self.targets.items()}
+
+    def _steps(self, name: str) -> List[dict]:
+        """The build steps of a target, with those that ran in its WPF
+        temporary project instead. MSBuild builds that project
+        (`<Project>_<random>_wpftmp`) in the same directories first, so a
+        generator both would run (cswinrt) runs there, and is up to date by
+        the time the project itself gets to it."""
+        steps = list(self.targets[name].get("steps", []))
+        project = _posix(self.targets[name].get("project", ""))
+        directory = project.rsplit("/", 1)[0] if "/" in project else ""
+        stem = project.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        for other, t in self.targets.items():
+            other_project = _posix(t.get("project", ""))
+            if other != name and other.endswith("_wpftmp") \
+                    and other_project.rsplit("/", 1)[0] == directory \
+                    and other_project.rsplit("/", 1)[-1].startswith(stem + "_"):
+                steps += t.get("steps", [])
+        return steps
 
     def _reference_label(self, name: str, from_package: str) -> str:
         """What a `csc_assembly` references to compile against target `name`."""
@@ -286,6 +340,17 @@ class Emitter:
             extra_loads.setdefault("//bazel/dotnet:cswinrt.bzl", set()).add("cswinrt_projection")
         applied_hooks: Set[int] = set()
         boilerplate: Dict[str, int] = {}
+        if name.endswith("_wpftmp"):
+            return None, {"package": package, "target": target, "notes": [],
+                          "excluded": "the temporary project MSBuild generates for the WPF markup "
+                                      "compiler; its compile is the `_intermediate` target of "
+                                      "the project it belongs to"}
+        xaml = d.get("xaml") or {}
+        winui = xaml.get("framework") == "winui" and "pass1" in xaml and "pass2" in xaml
+        wpf = xaml.get("framework") == "wpf" and "pass1" in xaml
+        xaml_dir = _posix(xaml["pass1"]["output_path"]).rstrip("/") if winui or wpf else ""
+        # Generated code of the XAML compiler, as paths below its output directory.
+        xaml_code: List[str] = []
         for g in sorted(d["sources"].get("generated", []),
                         key=lambda g: (g["kind"], g.get("path") or g.get("dir") or "")):
             kind = g["kind"]
@@ -340,6 +405,11 @@ class Emitter:
                 self.source_maps.append((_posix(g["path"]), token))
                 self.source_maps.append(("bazel-bin/%s%s" % (package + "/" if package else "", out),
                                          token))
+            elif (winui or wpf) and "path" in g \
+                    and _posix(g["path"]).lower().startswith(xaml_dir.lower() + "/") \
+                    and (winui or _posix(g["path"]).lower() in
+                         {_posix(p).lower() for p in xaml["pass1"]["outputs"].get("code", [])}):
+                xaml_code.append(_posix(g["path"])[len(xaml_dir) + 1:])
             else:
                 unhandled.append("generated sources (%s): %s" % (
                     kind, g.get("dir") or g.get("path")))
@@ -484,6 +554,13 @@ class Emitter:
             elif owner:
                 # .NET Framework can reference WinRT metadata directly.
                 deps.append("//bazel/winmd:%s_ref" % self._winmd_target(owner))
+            elif exact and _is_intermediate(other) and self._snapshot(
+                    other, "a reference the build generated (a COM interop assembly, from a "
+                           "type library registered on the machine)"):
+                refs.append(self.workspace.label(_posix(other), package))
+                notes.append("references %s, copied from the reference tree: MSBuild generates "
+                             "it from a COM type library of the machine"
+                             % _posix(other).rsplit("/", 1)[-1])
             else:
                 unhandled.append("reference to a loose file: %s" % other)
         packs_used = set(d["references"].get("packs", {})) | set(d["analyzers"].get("packs", {}))
@@ -562,6 +639,8 @@ class Emitter:
                     named_resources[":" + helper] = r["name"]
                 elif r["kind"] == "repo":
                     named_resources[self.workspace.label(r["path"], package)] = r["name"]
+                elif wpf and r["name"].lower().endswith(".g.resources"):
+                    named_resources[":%s_markup" % target] = r["name"]
                 else:
                     unhandled.append("embedded resource %s, which the build generates (%s)"
                                      % (r["name"], r["path"]))
@@ -597,15 +676,43 @@ class Emitter:
         # reported apart from what could not be expressed.
         markup = [r["name"] for r in d.get("resources", [])
                   if r["name"].lower().endswith(".g.resources")]
-        if markup:
+        if markup and not wpf:
             summary["excluded"] = "XAML: the project compiles markup (%s)" % markup[0]
         if unhandled:
             summary["unhandled"] = unhandled
             return None, summary
 
+        if entry.get("pri"):
+            problem = self._pri(name, target, package, entry["pri"], xaml if winui else {},
+                                helpers, loads, extra_loads)
+            if problem:
+                summary["unhandled"] = [problem]
+                return None, summary
+            summary["pri"] = ":%s_pri" % target
+
         if exact:
             rule = "exact_csharp_assembly"
             extra_loads.setdefault("//bazel/dotnet:csc_assembly.bzl", set()).add(rule)
+            if winui:
+                chain = self._winui_xaml(name, target, package, d, xaml_code, list(srcs),
+                                         list(attrs), exact_options, additional, configs,
+                                         compile_data, refs, analyzer_files, tfm, extra_loads)
+                if isinstance(chain, str):
+                    summary["unhandled"] = [chain]
+                    return None, summary
+                helpers.append(chain["starlark"])
+                srcs += chain["srcs"]
+                summary["xaml"] = "winui"
+            if wpf:
+                chain = self._wpf_xaml(name, target, package, d, xaml_code, list(srcs),
+                                       list(attrs), exact_options, additional, configs,
+                                       compile_data, refs, analyzer_files, tfm, extra_loads)
+                if isinstance(chain, str):
+                    summary["unhandled"] = [chain]
+                    return None, summary
+                helpers.append(chain["starlark"])
+                srcs += chain["srcs"]
+                summary["xaml"] = "wpf"
             out = [helpers and "\n".join(helpers) or ""]
             out += ["# rules_dotnet's own rules cannot reproduce this compile:"]
             out += ["#   " + gap for gap in self.gaps[name]]
@@ -633,6 +740,12 @@ class Emitter:
             attrs.append(("visibility", '["//visibility:public"]'))
             out += ["    %s = %s," % (k, v) for k, v in sorted(attrs)]
             out.append(")")
+            if d["target"] != "library" and d.get("apphost"):
+                directory = self._program_directory(name, target, package, entry, d, loads,
+                                                    extra_loads, summary)
+                if directory:
+                    out += ["", directory]
+                    notes[:] = [n for n in notes if "not runnable" not in n]
             summary["loads"] = sorted(loads)
             summary["extra_loads"] = {k: sorted(v) for k, v in extra_loads.items()}
             summary["rule"] = rule
@@ -685,6 +798,436 @@ class Emitter:
         summary["extra_loads"] = {k: sorted(v) for k, v in extra_loads.items()}
         summary["rule"] = rule
         return "\n".join(x for x in out if x), summary
+
+    def _snapshot(self, path: str, why: str) -> bool:
+        """Schedules a generated file of the reference tree to be copied into
+        the workspace at the same path. False when there is no reference tree
+        or no such file."""
+        path = _posix(path)
+        if not self.reference_root or not os.path.isfile(
+                os.path.join(self.reference_root, path.replace("/", os.sep))):
+            return False
+        self.snapshots.setdefault(path, why)
+        return True
+
+    # ---- program directories ----------------------------------------------
+
+    def _program_directory(self, name: str, target: str, package: str, entry: dict, d: dict,
+                           loads: Set[str], extra_loads: Dict[str, Set[str]],
+                           summary: dict) -> Optional[str]:
+        """The host executable of a program compiled by csc_assembly, and its
+        directory as the reference build left it: every file MSBuild copied
+        beside the program, from whichever target or package provides it here.
+        What has no provider is listed in the summary (`not_laid_out`)."""
+        output = _posix(entry.get("output", ""))
+        if "/" not in output:
+            return None
+        out_dir, assembly_file = output.rsplit("/", 1)
+        stem = assembly_file.rsplit(".", 1)[0]
+        template = self._external_label(d["apphost"]["template"])
+        if template is None:
+            pack = classify_external(d["apphost"]["template"])
+            key = self.lock.get("targets", {}).get(name, {}).get("packs", {}).get(
+                "%s/%s" % (pack["id"], pack["version"])) if pack else None
+            key = key or ("%s/%s" % (pack["id"], pack["version"]) if pack else None)
+            if not key or key not in self.lock.get("packages", {}):
+                summary.setdefault("notes", []).append(
+                    "no program directory: the host template %s is not in the lock"
+                    % d["apphost"]["template"])
+                return None
+            template = "@%s//%s:%s" % (self.nuget_repo, key, pack["path"])
+
+        files: Dict[str, str] = {}
+        missing: List[str] = []
+        skipped = 0
+        assemblies = {t["csharp"]["assembly"].lower(): n for n, t in self.targets.items()}
+        compiled_xaml: Dict[str, str] = {}
+        for other, t in self.targets.items():
+            xaml = t["csharp"].get("xaml") or {}
+            if xaml.get("framework") != "winui" or "pass2" not in xaml:
+                continue
+            second = _posix(xaml["pass2"]["output_path"]).rstrip("/")
+            for kind in ("xaml", "xbf"):
+                for path in xaml["pass2"].get("outputs", {}).get(kind, []):
+                    compiled_xaml[_posix(path).lower()] = "%s_xaml2/%s" % (
+                        self.label_of_target(other, package), _posix(path)[len(second) + 1:])
+
+        def provider(source: str, destination: str) -> Optional[str]:
+            file_name = destination.rsplit("/", 1)[-1]
+            low = file_name.lower()
+            if re.match(r"^[A-Za-z]:", source):
+                where = classify_external(source)
+                if not where or where.get("kind") not in ("nuget", "pack"):
+                    return None
+                key = "%s/%s" % (where["id"], where["version"])
+                if where["kind"] == "pack":
+                    key = self.lock.get("targets", {}).get(name, {}).get("packs", {}).get(key, key)
+                return "@%s//%s:%s" % (self.nuget_repo, key.lower() if where["kind"] == "nuget" else key,
+                                       where["path"])
+            if _posix(source).lower() in compiled_xaml:
+                return compiled_xaml[_posix(source).lower()]
+            if low == "apphost.exe" or low == stem.lower() + ".exe":
+                return ":%s_host" % target
+            if low.endswith(".dll") and low[:-4] in assemblies:
+                other = assemblies[low[:-4]]
+                return self._reference_label(other, package)
+            if low in self.native_outputs:
+                return self.native_outputs[low]
+            owner = self.pri_owner.get(_posix(source).lower())
+            if owner is None and low.endswith(".pri"):
+                owner = next((n for p, n in self.pri_owner.items() if p.rsplit("/", 1)[-1] == low), None)
+            if owner:
+                return self.label_of_target(owner, package) + "_pri"
+            if _posix(source) in self.snapshots or os.path.isfile(
+                    os.path.join(self.workspace.root, _posix(source).replace("/", os.sep))):
+                return self.workspace.label(source, package)
+            return None
+
+        for step in entry.get("steps", []):
+            if step.get("kind") != "copy":
+                continue
+            sources, destinations = step.get("from", []), step.get("to", [])
+            if isinstance(destinations, str):
+                destinations = [destinations.rstrip("/") + "/" + _posix(s).rsplit("/", 1)[-1]
+                                for s in sources]
+            for source, destination in zip(sources, destinations):
+                destination = _posix(destination)
+                if not destination.lower().startswith(out_dir.lower() + "/"):
+                    continue
+                relative = destination[len(out_dir) + 1:]
+                if relative.lower().endswith((".pdb", ".xml")) and not re.match(r"^[A-Za-z]:", source):
+                    skipped += 1          # debug symbols and documentation of the build's own targets
+                    continue
+                label = provider(source, relative)
+                if label:
+                    files[relative] = label
+                else:
+                    missing.append(relative)
+        files[assembly_file] = ":%s_csc" % target
+        files[stem + ".exe"] = ":%s_host" % target
+        if entry.get("pri"):
+            files[_posix(entry["pri"]["output"]).rsplit("/", 1)[-1]] = ":%s_pri" % target
+        helpers: List[str] = []
+        for suffix, what in ((".runtimeconfig.json", "which runtime the host starts the program on"),
+                             (".deps.json", "where the host finds the program's assemblies")):
+            lines = self._read_reference(out_dir + "/" + stem + suffix)
+            if lines is None:
+                missing.append(stem + suffix)
+                continue
+            helper = "%s_%s" % (target, suffix.strip(".").split(".")[0])
+            helpers.append(_write_file(helper, "_msbuild/%s/%s%s" % (target, stem, suffix), lines,
+                                       "MSBuild writes this beside the program: %s." % what))
+            loads.add("write_file")
+            files[stem + suffix] = ":" + helper
+        extra_loads.setdefault("//bazel/dotnet:apphost.bzl", set()).add("dotnet_apphost")
+        extra_loads.setdefault("//bazel:layout.bzl", set()).add("program_directory")
+        directory = stem if stem != target else stem + ".app"
+        summary["program"] = ":" + directory
+        if missing:
+            summary["not_laid_out"] = sorted(set(missing))
+        if skipped:
+            summary.setdefault("notes", []).append(
+                "%d debug-symbol and documentation files of the reference's program "
+                "directory are not laid out" % skipped)
+        return "\n\n".join(helpers + ["\n".join([
+            "# The executable that starts the program (MSBuild's _CreateAppHost).",
+            "dotnet_apphost(", '    name = "%s_host",' % target, '    out = "%s.exe",' % stem,
+            '    assembly = ":%s_csc",' % target,
+            "    gui = %s," % ("True" if d["apphost"].get("gui") else "False"),
+            '    template = "%s",' % template, ")"]), "\n".join([
+                "# The program with everything the reference build put beside it:",
+                "# `bazel run` starts it from there.",
+                "program_directory(", '    name = "%s",' % directory,
+                '    executable = "%s.exe",' % stem,
+                "    files = %s," % _fmt_dict(files),
+                '    visibility = ["//visibility:public"],', ")"])])
+
+    # ---- resources --------------------------------------------------------
+
+    def _external_label(self, path: str) -> Optional[str]:
+        """Label of a file in a NuGet package, given its absolute path."""
+        where = classify_external(path) if re.match(r"^[A-Za-z]:", path) else None
+        if where and where.get("kind") == "nuget":
+            return "@%s//%s/%s:%s" % (self.nuget_repo, where["id"], where["version"], where["path"])
+        return None
+
+    def _pri(self, name: str, target: str, package: str, pri: dict, xaml: dict,
+             helpers: List[str], loads: Set[str], extra_loads: Dict[str, Set[str]]) -> Optional[str]:
+        """Appends the project's resource index target to `helpers`; returns
+        what could not be expressed, if anything."""
+        makepri = self._external_label(pri.get("makepri", ""))
+        if not makepri:
+            return "resource index: makepri is not in a NuGet package (%s)" % pri.get("makepri")
+        config = self._read_reference(pri["config"])
+        if config is None:
+            return "resource index: %s is not readable; pass --reference-root" % pri["config"]
+
+        def label(path: str) -> Optional[str]:
+            if re.match(r"^[A-Za-z]:", path):
+                return self._external_label(path)
+            return self.workspace.label(path, package)
+
+        layout: Dict[str, str] = {}
+        for f in pri.get("layout", []):
+            found = label(f["path"]) if f["path"] else None
+            if not found:
+                return "resource index: no source known for %s" % f["name"]
+            layout[found] = f["name"]
+        # Compiled XAML of this project: its path below the XAML compiler's
+        # output directory, by full path and for matching by name. (A library's
+        # is embedded under `<Library>\`, and MSBuild may embed a copy it made
+        # in the output directory.)
+        compiled: Dict[str, str] = {}
+        if xaml:
+            second = _posix(xaml["pass2"]["output_path"]).rstrip("/")
+            for path in xaml["pass2"].get("outputs", {}).get("xbf", []):
+                compiled[_posix(path).lower()] = _posix(path)[len(second) + 1:]
+        embed: Dict[str, str] = {}
+        for f in pri.get("embed", []):
+            relative = compiled.get(_posix(f["path"]).lower())
+            if relative is None:
+                tails = [r for r in compiled.values()
+                         if ("/" + _posix(f["name"]).lower()).endswith("/" + r.lower())]
+                relative = max(tails, key=len) if tails else None
+            if relative is None:
+                return "resource index: embeds %s, which no rule here produces" % f["name"]
+            embed[":%s_xaml2/%s" % (target, relative)] = f["name"]
+        pris: List[str] = []
+        for path in pri.get("pri_files", []):
+            owner = self.pri_owner.get(_posix(path).lower())
+            if owner:
+                pris.append(self.label_of_target(owner, package) + "_pri")
+                continue
+            found = self._external_label(path)
+            if not found:
+                return "resource index: merges %s, which no target or package provides" % path
+            pris.append(found)
+        resources = [label(p) for p in pri.get("resources", [])]
+        if None in resources:
+            return "resource index: a string table outside the repository and every package"
+        helpers.append(_write_file(
+            target + "_priconfig", "_msbuild/%s/priconfig.xml" % target, config,
+            "MSBuild's PRI targets write this: the qualifiers of the index and its sources."))
+        loads.add("write_file")
+        extra_loads.setdefault("//bazel/dotnet:pri.bzl", set()).add("winui_pri")
+        lines = ["# The project's resource index: its string tables, images and compiled XAML,",
+                 "# and the indexes of what it references.",
+                 "winui_pri(", '    name = "%s_pri",' % target,
+                 '    out = "%s",' % _posix(pri["output"]).rsplit("/", 1)[-1],
+                 '    config = ":%s_priconfig",' % target]
+        if embed:
+            lines.append("    embed = %s," % _fmt_dict(embed))
+        lines.append('    index_name = "%s",' % pri["index_name"])
+        if layout:
+            lines.append("    layout = %s," % _fmt_dict(layout))
+        lines += ['    makepri = "%s",' % makepri,
+                  '    makepri_files = ["%s:files"],' % makepri.rsplit(":", 1)[0]]
+        if pris:
+            lines.append("    pris = %s," % _fmt_list(pris))
+        if resources:
+            lines.append("    resources = %s," % _fmt_list(resources))
+        lines += ['    visibility = ["//visibility:public"],', ")"]
+        helpers.append("\n".join(lines))
+        return None
+
+    # ---- XAML -------------------------------------------------------------
+
+    def _pair_generated(self, reference: str, package: str, built: str, token: str) -> None:
+        """Records that a generated source of the reference build and one of
+        the Bazel build (a path below the package's output directory) are the
+        same file, for the differ (`ignore.source_map`)."""
+        self.source_maps.append((_posix(reference), token))
+        self.source_maps.append(("bazel-bin/%s%s" % (package + "/" if package else "", built), token))
+
+    def _winui_xaml(self, name: str, target: str, package: str, d: dict, code: List[str],
+                    srcs: List[str], attrs: List[Tuple[str, str]], options: List[str],
+                    additional: List[str], configs: List[str], compile_data: List[str],
+                    refs: List[str], analyzers: List[str], tfm: str,
+                    extra_loads: Dict[str, Set[str]]):
+        """The two XAML compiler runs and the compile between them, for a WinUI
+        project: {"starlark": the three targets, "srcs": the generated code the
+        project's own compile takes}; or a string saying what is missing."""
+        xaml = d["xaml"]
+        first, second = xaml["pass1"], xaml["pass2"]
+        lock_target = self.lock.get("targets", {}).get(name, {})
+        key = next((k for k in lock_target.get("packages", {})
+                    if k.startswith("microsoft.windowsappsdk.winui/")), None)
+        if key is None:
+            return "XAML: the lock has no Microsoft.WindowsAppSDK.WinUI package for this target"
+        compiler = "@%s//%s:tools/net472/XamlCompiler.exe" % (self.nuget_repo, key)
+        if "tools/net472/XamlCompiler.exe" not in lock_target.get("files", {}).get(key, []):
+            return ("XAML: the lock does not list the XAML compiler's files; write it with "
+                    "nuget_assets.py of this version")
+        out_dir = _posix(first["output_path"]).rstrip("/")
+        declared = [_posix(p)[len(out_dir) + 1:] for p in first.get("outputs", {}).get("code", [])]
+        missing = sorted(set(code) - set(declared))
+        if missing:
+            return "XAML: compiles %s, which pass 1 of the XAML compiler did not report" % missing[0]
+        second_dir = _posix(second["output_path"]).rstrip("/")
+        markup = [_posix(p)[len(second_dir) + 1:]
+                  for kind in ("xaml", "xbf") for p in second.get("outputs", {}).get(kind, [])]
+        rewritten = [c for c in declared if not c.lower().endswith(".g.i.cs")]
+
+        def run(suffix: str, settings: dict, outs: List[str], local: Optional[str]) -> List[str]:
+            lines = ["winui_xaml_compile(", '    name = "%s_%s",' % (target, suffix)]
+            for attribute, pages in (("applications", first.get("applications", [])),
+                                     ("pages", first.get("pages", []))):
+                if pages:
+                    lines.append("    %s = %s," % (attribute, _fmt_list(
+                        [self.workspace.label(p["path"], package) for p in pages])))
+            lines += ['    compiler = "%s",' % compiler,
+                      '    compiler_files = ["@%s//%s:files"],' % (self.nuget_repo, key)]
+            if local:
+                lines.append('    local_assembly = "%s",' % local)
+            lines += ["    not_from_packages = %s," % _fmt_list(sorted(
+                          {_posix(p).rsplit("/", 1)[-1]
+                           for p in first.get("references_not_from_packages", [])})),
+                      "    outs = %s," % _fmt_list(["%s_%s/%s" % (target, suffix, o) for o in outs]),
+                      '    project = "%s",' % _posix(xaml["project"]),
+                      "    reference_order = %s," % _fmt_list(first.get("reference_order", [])),
+                      "    references = %s," % _fmt_list(sorted(set(refs))),
+                      "    settings = %s," % _fmt_dict(settings),
+                      # A program that uses the project lays its compiled markup out.
+                      '    visibility = ["//visibility:public"],', ")"]
+            return lines
+
+        extra_loads.setdefault("//bazel/dotnet:xaml_winui.bzl", set()).add("winui_xaml_compile")
+        extra_loads.setdefault("//bazel/dotnet:csc_assembly.bzl", set()).add("csc_assembly")
+        between = ["csc_assembly(", '    name = "%s_intermediate",' % target,
+                   "    srcs = %s," % _fmt_list(sorted(
+                       set(srcs) | {":%s_xaml1/%s" % (target, c) for c in declared}, key=str.lower)),
+                   '    assembly_name = "%s",' % d["assembly"]]
+        carried = dict(attrs)
+        for attribute in ("defines", "keyfile"):
+            if attribute in carried:
+                between.append("    %s = %s," % (attribute, carried[attribute]))
+        for attribute, values in (("additionalfiles", sorted({a for a in additional if a})),
+                                  ("analyzer_configs", sorted({c for c in configs if c})),
+                                  ("analyzers", sorted(set(analyzers))),
+                                  ("compile_data", sorted(set(compile_data))),
+                                  ("options", sorted(options)), ("refs", sorted(set(refs)))):
+            if values:
+                between.append("    %s = %s," % (attribute, _fmt_list(values)))
+        between += ['    target_framework = "%s",' % base_tfm(tfm), ")"]
+        starlark = "\n".join(
+            ["# WinUI XAML, as MSBuild compiles it: the XAML compiler's first pass writes the",
+             "# fields and InitializeComponent of each page; the project is compiled with",
+             "# those into an intermediate assembly; the second pass reads that assembly",
+             "# for the project's own types and writes the rest of the code and the",
+             "# compiled markup."]
+            + run("xaml1", first["settings"], declared, None) + [""]
+            + ["# What MSBuild's XamlPreCompile target builds (`<IntDir>intermediatexaml`)."]
+            + between + [""]
+            + run("xaml2", second["settings"], rewritten + markup, ":%s_intermediate" % target))
+        for relative in declared:
+            self._pair_generated(out_dir + "/" + relative, package,
+                                 "%s_%s/%s" % (target, "xaml2" if relative in rewritten else "xaml1",
+                                               relative), "@xaml/%s/%s" % (target, relative))
+        return {"starlark": starlark,
+                "srcs": [":%s_xaml1/%s" % (target, c) for c in declared if c not in rewritten]
+                + [":%s_xaml2/%s" % (target, c) for c in rewritten]}
+
+    def _wpf_xaml(self, name: str, target: str, package: str, d: dict, code: List[str],
+                  srcs: List[str], attrs: List[Tuple[str, str]], options: List[str],
+                  additional: List[str], configs: List[str], compile_data: List[str],
+                  refs: List[str], analyzers: List[str], tfm: str,
+                  extra_loads: Dict[str, Set[str]]):
+        """The WPF markup compile of a project: pass 1, the temporary assembly
+        and pass 2 where the markup needs them, and the resources file of the
+        compiled markup. {"starlark", "srcs"} like `_winui_xaml`, or a string
+        saying what is missing."""
+        xaml = d["xaml"]
+        first = xaml["pass1"]
+        out_dir = _posix(first["output_path"]).rstrip("/")
+
+        def below(path: str) -> str:
+            return _posix(path)[len(out_dir) + 1:]
+
+        generated = [below(p) for p in first["outputs"].get("code", [])]
+        missing = sorted(set(code) - set(generated))
+        if missing:
+            return "XAML: compiles %s, which pass 1 of the markup compiler did not report" % missing[0]
+        early = [below(p) for p in first["outputs"].get("baml", [])]
+        state = [below(p) for p in first.get("state", [])]
+        late = [below(p) for p in xaml.get("pass2", {}).get("outputs", {}).get("baml", [])]
+        if first.get("requires_pass2") and not state:
+            return "XAML: pass 2 is needed and pass 1 reported no state files for it"
+        packed = xaml.get("resources") or {}
+        if not packed.get("files"):
+            return "XAML: the build has no resources file of compiled markup"
+        project_dir = _posix(xaml["project"]).rsplit("/", 1)[0] if "/" in _posix(xaml["project"]) else ""
+        files: Dict[str, str] = {}
+        for f in packed["files"]:
+            path = _posix(f["path"])
+            if not path.lower().startswith(out_dir.lower() + "/"):
+                # A `Resource` item of the project (an image the markup shows):
+                # packed with the compiled markup, under its path in the project.
+                if re.match(r"^[A-Za-z]:", path) or not path.lower().startswith(project_dir.lower() + "/"):
+                    return "XAML: embeds %s, a file outside the project directory" % path
+                files[self.workspace.label(path, package)] = (
+                    f.get("logical_name") or f.get("link") or path[len(project_dir) + 1:])
+                continue
+            relative = below(path)
+            stage = "wpf1" if relative in early else "wpf2" if relative in late else None
+            if stage is None:
+                return "XAML: %s is embedded, and neither pass of the markup compiler wrote it" % relative
+            files[":%s_%s/%s" % (target, stage, relative)] = f.get("logical_name") or relative
+        markup = []
+        for attribute, pages in (("applications", first.get("applications", [])),
+                                 ("pages", first.get("pages", []))):
+            if pages:
+                markup.append("    %s = %s," % (attribute, _fmt_list(
+                    [self.workspace.label(p["path"], package) for p in pages])))
+        extra_loads.setdefault("//bazel/dotnet:xaml_wpf.bzl", set()).update(
+            ["wpf_markup_compile", "wpf_resources"])
+        lines = ["# WPF markup, as MSBuild compiles it: pass 1 writes the code of every page and",
+                 "# compiles the markup that needs no type of the project; the rest is compiled",
+                 "# in pass 2, against a temporary assembly of the project with that code.",
+                 "wpf_markup_compile(", '    name = "%s_wpf1",' % target] + markup
+        if first.get("content"):
+            lines.append("    content = %s," % _fmt_list(first["content"]))
+        lines += ["    outs = %s," % _fmt_list(["%s_wpf1/%s" % (target, o) for o in generated + early + state]),
+                  "    pass_ = 1,", '    project_dir = "%s",' % project_dir,
+                  "    references = %s," % _fmt_list(sorted(set(refs))),
+                  "    settings = %s," % _fmt_dict(first["settings"]),
+                  "    sources = %s," % _fmt_list(sorted(set(srcs), key=str.lower)), ")"]
+        if late:
+            extra_loads.setdefault("//bazel/dotnet:csc_assembly.bzl", set()).add("csc_assembly")
+            between = ["", "# MSBuild's GenerateTemporaryTargetAssembly (`<Project>_<random>_wpftmp.csproj`).",
+                       "csc_assembly(", '    name = "%s_intermediate",' % target,
+                       "    srcs = %s," % _fmt_list(sorted(
+                           set(srcs) | {":%s_wpf1/%s" % (target, c) for c in generated}, key=str.lower)),
+                       '    assembly_name = "%s",' % d["assembly"]]
+            carried = dict(attrs)
+            for attribute in ("defines", "keyfile"):
+                if attribute in carried:
+                    between.append("    %s = %s," % (attribute, carried[attribute]))
+            for attribute, values in (("additionalfiles", sorted({a for a in additional if a})),
+                                      ("analyzer_configs", sorted({c for c in configs if c})),
+                                      ("analyzers", sorted(set(analyzers))),
+                                      ("compile_data", sorted(set(compile_data))),
+                                      ("options", sorted(options)), ("refs", sorted(set(refs)))):
+                if values:
+                    between.append("    %s = %s," % (attribute, _fmt_list(values)))
+            between += ['    target_framework = "%s",' % base_tfm(tfm), ")", "",
+                        "wpf_markup_compile(", '    name = "%s_wpf2",' % target] + markup
+            between += ['    local_assembly = ":%s_intermediate",' % target,
+                        "    outs = %s," % _fmt_list(["%s_wpf2/%s" % (target, o) for o in late]),
+                        "    pass_ = 2,", '    project_dir = "%s",' % project_dir,
+                        "    references = %s," % _fmt_list(sorted(set(refs))),
+                        "    settings = %s," % _fmt_dict(xaml["pass2"].get("settings", {})),
+                        "    state = %s," % _fmt_list([":%s_wpf1/%s" % (target, s) for s in state]),
+                        ")"]
+            lines += between
+        lines += ["", "# The compiled markup, as the assembly embeds it.",
+                  "wpf_resources(", '    name = "%s_markup",' % target,
+                  '    out = "%s",' % _posix(packed["output"]).rsplit("/", 1)[-1],
+                  "    files = %s," % _fmt_dict(files), ")"]
+        for relative in generated:
+            self._pair_generated(out_dir + "/" + relative, package,
+                                 "%s_wpf1/%s" % (target, relative), "@xaml/%s/%s" % (target, relative))
+        return {"starlark": "\n".join(lines),
+                "srcs": [":%s_wpf1/%s" % (target, c) for c in generated]}
 
     # ---- WinRT ------------------------------------------------------------
 
@@ -759,7 +1302,7 @@ class Emitter:
                  unhandled: List[str]) -> Optional[dict]:
         """The project's cswinrt invocation as a `cswinrt_projection` target:
         {"name", "starlark", "output"} or None if the project runs none."""
-        steps = self.targets[name].get("steps", [])
+        steps = self._steps(name)
         execs = [s for s in steps if s.get("kind") == "exec"
                  and "cswinrt.exe" in s.get("command", "").lower()]
         if not execs:
@@ -991,7 +1534,8 @@ class Emitter:
                         "depends on %s, which was not emitted" % m for m in missing]
                     excluded = [m for m in missing if "excluded" in self.summary.get(m, {})]
                     if excluded:
-                        self.summary[name]["excluded"] =                             "depends on %s, which is excluded (XAML)" % excluded[0]
+                        self.summary[name]["excluded"] = (
+                            "depends on %s, which is excluded (XAML)" % excluded[0])
                     changed = True
         by_package: Dict[str, List[Tuple[str, str, dict]]] = {}
         for name, text in rendered_all.items():
@@ -1044,10 +1588,20 @@ class Emitter:
                 seen.add(prefix)
                 source_map.append({"from": prefix, "to": token})
         suggestions = {"include_csharp": True, "ignore": {"source_map": source_map}}
-        if any(self.resx_helpers.values()):
-            # The .resx converter the templates build is a tool of the Bazel
-            # build, not an assembly of the project.
-            suggestions["exclude_targets"] = [RESX_TOOL]
+        # Programs the templates build to run a generator are tools of the
+        # Bazel build, not assemblies of the project.
+        tools = [RESX_TOOL] if any(self.resx_helpers.values()) else []
+        for name, record in sorted(self.summary.items()):
+            if "unhandled" in record or "excluded" in record:
+                continue
+            if record.get("xaml"):
+                tools += [XAML_TOOL if record["xaml"] == "winui" else WPF_TOOL]
+            if record.get("pri"):
+                tools.append(PRI_TOOL)
+            if record.get("program"):
+                tools.append(APPHOST_TOOL)
+        if tools:
+            suggestions["exclude_targets"] = sorted(set(tools))
         return suggestions
 
 
@@ -1058,17 +1612,36 @@ def _write_file(name: str, out: str, lines: List[str], comment: str) -> str:
                       '    out = "%s",' % out, "    content = %s," % _fmt_list(lines), ")"])
 
 
-def write(files: Dict[str, str], exports: Dict[str, Set[str]], root: str) -> List[str]:
-    """Write `files`, and export blocks into the BUILD files of packages other
-    packages take files from. Returns what was skipped (not ours to overwrite)."""
+_EXPORT_BLOCK = re.compile(r"(?ms)^(# any2bazel:[\w-]+-exports begin[^\n]*)\n.*?^# any2bazel:[\w-]+-exports end\n")
+
+
+def foreign_export_blocks(existing: str, own_begin: str) -> str:
+    """The export blocks other any2bazel emitters wrote into a BUILD file, to
+    carry over when the file's owner rewrites it: each emitter exports the
+    files ITS targets take from the package."""
+    blocks = [m.group(0) for m in _EXPORT_BLOCK.finditer(existing) if m.group(1) != own_begin]
+    return "".join("\n" + block for block in blocks)
+
+
+def write(files: Dict[str, str], exports: Dict[str, Set[str]], root: str,
+          snapshots: Optional[Dict[str, str]] = None, reference_root: str = "") -> List[str]:
+    """Write `files`, copy `snapshots` from the reference tree, and put export
+    blocks into the BUILD files of packages other packages take files from.
+    Returns what was skipped (not ours to overwrite)."""
     skipped: List[str] = []
+    for relative in sorted(snapshots or {}):
+        destination = os.path.join(root, relative.replace("/", os.sep))
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copyfile(os.path.join(reference_root, relative.replace("/", os.sep)), destination)
     for relative, content in sorted(files.items()):
         path = os.path.join(root, relative.replace("/", os.sep))
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
-                if not f.readline().startswith(MARKER):
-                    skipped.append(relative)
-                    continue
+                existing = f.read()
+            if not existing.startswith(MARKER):
+                skipped.append(relative)
+                continue
+            content += foreign_export_blocks(existing, EXPORTS_BEGIN)
         os.makedirs(os.path.dirname(path) or root, exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
@@ -1117,7 +1690,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     emitter = Emitter(report, lock, args.workspace, args.reference_root, args.nuget_repo,
                       args.only, hooks)
     files = emitter.emit()
-    skipped = [] if args.dry_run else write(files, emitter.workspace.exports, args.workspace)
+    skipped = [] if args.dry_run else write(files, emitter.workspace.exports, args.workspace,
+                                            emitter.snapshots, args.reference_root or "")
     if not args.dry_run:
         with open(os.path.join(args.workspace, "emit_dotnet.summary.json"), "w",
                   encoding="utf-8", newline="\n") as f:
@@ -1140,6 +1714,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("  excluded  %s: %s" % (name, reason))
     for name, reasons in sorted(blocked.items()):
         print("  %s: %s%s" % (name, reasons[0], " (+%d more)" % (len(reasons) - 1) if len(reasons) > 1 else ""))
+    for relative, why in sorted(emitter.snapshots.items()):
+        print("  snapshot  %s (%s)" % (relative, why))
     for relative in skipped:
         print("  not overwritten (no marker): %s" % relative)
     return 0

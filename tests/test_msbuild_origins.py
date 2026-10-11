@@ -140,6 +140,12 @@ def test_usage_is_recorded_per_root_and_feeds_the_path_map():
     assert tokens["@nuget/microsoft.windows.implementationlibrary"] == wil
     assert "@nuget/stylecop.analyzers" not in tokens
     assert "@msvc" in tokens and "@winsdk" in tokens
+    # A package that only has its consumers compile a source is used by a
+    # compile: the source is spelled with the package's token.
+    ml = "C:\\Users\\me\\.nuget\\packages\\contoso.ml\\2.1.70"
+    o.note(ml + "\\include\\AutoInitializer.cpp", "source", "app")
+    assert next(r for r in o.roots() if r.id == "contoso.ml").sources == {"include/AutoInitializer.cpp"}
+    assert dict((token, path) for path, token in o.path_map())["@nuget/contoso.ml"] == ml
     # Longest path first, so the versioned toolset wins over the VC directory.
     paths = [p for p, _ in o.path_map()]
     assert paths.index("C:\\VS\\VC\\Tools\\MSVC\\14.44.35207") < paths.index("C:\\VS\\VC")

@@ -152,6 +152,11 @@ Fields:
   one by one on both sides. (`source_map` collapses a whole tree to one token,
   which is what a directory output needs; run `check_generated.py` after a
   build to compare what is inside.)
+- **MSBuild emitters write their part of this file.** `emit_cc.py` and
+  `emit_dotnet.py` each leave an `emit_*.any2bazel.json` in the workspace with
+  the `target_map`, `include_map` and `source_map` entries that follow from
+  how they named things, and the tools of the Bazel build to exclude. Merge
+  them in; what remains to decide by hand is scope and accepted differences.
 - **`align_shared_libs`** (default `false`) — name-align shared libraries the
   way executables are (a missing one is `missing_target`; link flags are
   diffed) instead of pooling them with static libraries. For builds where a
@@ -212,7 +217,7 @@ Match the marker files at the repo root against the *Detect via* column of
 | Frontend | Detect via | Reference source | Diffs | Status | Guide |
 |----------|------------|------------------|-------|--------|-------|
 | **CMake** | `CMakeLists.txt` | File API codemodel-v2 | C/C++ compile + link parity | **Mature** — the validated path | [REFERENCE-cmake.md](docs/REFERENCE-cmake.md) |
-| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs; a design-time pass for C# | C/C++ compile + link parity (MSVC dialect); C# per-assembly parity with `rules_dotnet` (opt-in) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md), [C#](docs/REFERENCE-msbuild-csharp.md) |
+| **MSBuild** | `.sln`/`.slnx` with `.vcxproj`/`.csproj` | binary log (`-bl`) + tracking logs; a design-time pass for C# | C/C++ compile + link parity (MSVC dialect); C# per-assembly parity with `rules_dotnet` (opt-in); XAML (WinUI 3, WPF), resource indexes and native binaries compared by output (`check_outputs.py`) | **New** — Windows only | [REFERENCE-msbuild.md](docs/REFERENCE-msbuild.md), [C#](docs/REFERENCE-msbuild-csharp.md), [XAML](docs/REFERENCE-msbuild-xaml.md) |
 | **Maven** | `pom.xml` | forked `javac` argfiles | Java source-set parity | **Early** — argv-floor only | [REFERENCE-maven.md](docs/REFERENCE-maven.md) |
 | **VSCode / npm** | `package.json` driving gulp/esbuild/tsc | esbuild/tsc/`child_process` instrumentation | standalone TS emit check | **Experimental** — not wired into the main loop | [REFERENCE-npm.md](docs/REFERENCE-npm.md) |
 
